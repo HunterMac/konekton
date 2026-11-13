@@ -1,0 +1,61 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "text",
+      "x": 0,
+      "y": 0,
+      "width": 200,
+      "height": 200,
+      "color": "3",
+      "text": "Call plumber",
+      "konekton": {
+        "kind": "sticky",
+        "fontSize": 18,
+        "align": "center",
+        "bold": false,
+        "status": "inProgress",
+        "date": "2026-11-03"
+      }
+    },
+    {
+      "id": "n2",
+      "type": "link",
+      "x": 300,
+      "y": 0,
+      "width": 280,
+      "height": 60,
+      "url": "https://example.com",
+      "konekton": {
+        "status": "done"
+      }
+    }
+  ],
+  "edges": [],
+  "konekton": {
+    "version": 1,
+    "plans": [
+      {
+        "id": "p1",
+        "type": "board",
+        "name": "Board",
+        "items": [
+          "n1",
+          "n2"
+        ],
+        "future": true
+      },
+      {
+        "id": "p2",
+        "type": "timeline",
+        "name": "Timeline",
+        "items": [
+          "n1"
+        ]
+      }
+    ],
+    "other": {
+      "a": 1
+    }
+  }
+}

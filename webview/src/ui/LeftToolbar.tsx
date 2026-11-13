@@ -16,9 +16,11 @@ const TOOLS: { tool: Tool; title: string; icon: ReactNode }[] = [
 export function LeftToolbar() {
   const store = useBoardStore();
   const tool = useBoard((s) => s.tool);
+  const fileReferences = useBoard((s) => s.features.fileReferences);
+  const tools = fileReferences ? TOOLS : TOOLS.filter((t) => t.tool !== 'file');
   return (
     <Panel position="center-left" className="eb-ui eb-left-toolbar">
-      {TOOLS.map((t) => (
+      {tools.map((t) => (
         <button
           key={t.tool}
           type="button"

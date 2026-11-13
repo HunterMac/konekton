@@ -23,7 +23,7 @@ export function buildFragment(doc: CanvasDoc, nodeIds: readonly string[]): strin
   const nodes = boardNodes(doc).filter((n) => ids.has(n.id));
   if (nodes.length === 0) return null;
   const edges = doc.edges.filter(isBoardEdge).filter((e) => ids.has(e.fromNode) && ids.has(e.toNode));
-  return serialize({ nodes, edges, extra: {} });
+  return serialize({ nodes, edges, plans: [], otherPlans: [], konektonExtra: {}, extra: {} });
 }
 
 /** Parse clipboard text as a fragment. Returns null for anything that is not a board fragment. */
@@ -37,13 +37,15 @@ export function parseFragment(text: string): Fragment | null {
   return { nodes, edges };
 }
 
-/** Copy of a fragment with new ids, moved by `delta`. Edge ends are remapped. */
+/** Copy of a fragment with new ids, moved by `delta`. Edge ends are remapped. Status and date are dropped. */
 export function instantiate(fragment: Fragment, delta: Point): Fragment {
   const idMap = new Map<string, string>();
   const nodes = fragment.nodes.map((n) => {
     const id = newId();
     idMap.set(n.id, id);
-    return { ...n, id, x: n.x + delta.x, y: n.y + delta.y };
+    // A copy is a new idea, not the same task: it starts without status and date.
+    const { status: _status, date: _date, ...rest } = n;
+    return { ...rest, id, x: n.x + delta.x, y: n.y + delta.y };
   });
   const edges = fragment.edges.map((e) => ({
     ...e,

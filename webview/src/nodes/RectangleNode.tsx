@@ -4,9 +4,10 @@ import { useBoard, useBoardStore } from '../useBoard';
 import { EditableText } from '../ui/EditableText';
 import { TextToolbar } from '../ui/TextToolbar';
 import { ConnectionBalls } from './ConnectionBalls';
+import { PlanBadges, isDone, type ObjectData } from './PlanBadges';
 import { ResizeCorner } from './ResizeCorner';
 
-export type RectangleRFNode = Node<{ model: RectangleModel }, 'rectangle'>;
+export type RectangleRFNode = Node<ObjectData<RectangleModel>, 'rectangle'>;
 
 export function RectangleNode({ id, data }: NodeProps<RectangleRFNode>) {
   const node = data.model;
@@ -19,7 +20,7 @@ export function RectangleNode({ id, data }: NodeProps<RectangleRFNode>) {
     <>
       <TextToolbar node={node} />
       <div
-        className="eb-node eb-rectangle"
+        className={`eb-node eb-rectangle${isDone(node) ? ' eb-done' : ''}`}
         style={{ background: colors.fill, borderColor: colors.border, textAlign: node.align, fontSize: node.fontSize, fontWeight: node.bold ? 700 : 400 }}
       >
         {showTitle && (
@@ -43,6 +44,7 @@ export function RectangleNode({ id, data }: NodeProps<RectangleRFNode>) {
           onDoubleClick={() => store.getState().setEditing({ nodeId: id, field: 'body' })}
         />
       </div>
+      <PlanBadges node={node} plans={data.plans} />
       <ConnectionBalls />
       <ResizeCorner id={id} />
     </>

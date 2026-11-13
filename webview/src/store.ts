@@ -15,12 +15,16 @@ import {
   type BoardEdge,
   type BoardNode,
   type CanvasDoc,
+  type PlanType,
   type Side,
+  type Status,
 } from '../../src/shared/canvasFormat';
 import type { BoardSettings, ExtensionMessage, FileStatus, WebviewMessage } from '../../src/shared/protocol';
 import { buildFragment, deltaToPlace, instantiate, parseFragment, type Fragment } from './clipboard';
 import { facingSide, snap, type Anchor, type Point } from './geometry';
+import { placeInLane, planNodes, planOf, statusOf, withPlan, withoutNodes, type Mode } from './plans';
 import { DocSync } from './sync';
+import { ALL_FEATURES, type HostFeatures } from './host';
 import type { SnapGuide } from './snapping';
 
 export type Tool = 'select' | 'sticky' | 'rectangle' | 'file' | 'link';
@@ -77,6 +81,10 @@ export interface EndpointDrag {
 
 export interface BoardState {
   ready: boolean;
+  /** Which view is shown. UI only, never saved in the file. */
+  mode: Mode;
+  /** Node the Chaos view should center on after the next switch. UI only. */
+  focusNode: string | null;
   doc: CanvasDoc;
   parseError: string | null;
   settings: BoardSettings;
@@ -95,6 +103,8 @@ export interface BoardState {
   mouseFlow: Point | null;
   /** Alignment guides of the current drag. UI only, never saved. */
   snapGuides: SnapGuide[];
+  /** What the host supports. Fixed for the life of the store. */
+  readonly features: HostFeatures;
 }
 
 export interface NodeInit {
@@ -111,6 +121,10 @@ export interface BoardActions {
   applyExternal(text: string): void;
   handleMessage(message: ExtensionMessage): void;
 
+  /** Switch view. UI only: no commit, no undo step. */
+  setMode(mode: Mode): void;
+  /** Switch to Chaos, select the node and center it. */
+  showInChaos(id: string): void;
   setSelection(nodes: string[], edges: string[]): void;
   setTool(tool: Tool): void;
   setEditing(target: EditTarget | null): void;
@@ -140,6 +154,17 @@ export interface BoardActions {
   createFileNodes(paths: string[], at: Point): void;
   connect(from: { nodeId: string; anchor: Anchor }, to: { nodeId: string; anchor: Anchor }): string | undefined;
   reconnect(edgeId: string, end: 'from' | 'to', nodeId: string, anchor: Anchor): void;
+
+  addToPlan(type: PlanType, nodeIds: string[]): void;
+  removeFromPlan(type: PlanType, nodeIds: string[]): void;
+  /** `todo` removes the key, so plain files stay clean. */
+  setStatus(nodeIds: string[], status: Status): void;
+  setDate(nodeIds: string[], date: string | undefined): void;
+  /**
+   * One drop in a plan view: the status or date change plus the new card order, in one commit.
+   * For the Board `index` is the position inside the target lane; the Timeline keeps the order.
+   */
+  moveCard(type: PlanType, nodeId: string, to: { status?: Status; date?: string | undefined; index?: number }): void;
 
   deleteSelection(): void;
   deleteNode(id: string): void;
@@ -182,7 +207,7 @@ export function defaultSize(kind: NodeKind): { width: number; height: number } {
   }
 }
 
-export function createBoardStore(post: (message: WebviewMessage) => void): BoardStore {
+export function createBoardStore(post: (message: WebviewMessage) => void, initialMode: Mode = 'chaos', features: HostFeatures = ALL_FEATURES): BoardStore {
   const sync = new DocSync(post);
   let nextRequestId = 1;
   const requests = new Map<number, (value: unknown) => void>();
@@ -248,10 +273,33 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       if (select) set({ selNodes: fragment.nodes.map((n) => n.id), selEdges: [], editing: null });
     };
 
+    /** Content changes (create, edit, move, delete, paste, connect) are only allowed in Chaos. */
+    const chaosOnly = () => get().mode === 'chaos';
+
+    /** Set `patch` on the status/date of the given nodes. `undefined` removes the key. */
+    const patchPlanFields = (doc: CanvasDoc, ids: ReadonlySet<string>, patch: { status?: Status | undefined; date?: string | undefined }): CanvasDoc => ({
+      ...doc,
+      nodes: doc.nodes.map((n) => {
+        if (!isBoardNode(n) || !ids.has(n.id)) return n;
+        const next: BoardNode = { ...n };
+        if ('status' in patch) {
+          if (patch.status === undefined || patch.status === 'todo') delete next.status;
+          else next.status = patch.status;
+        }
+        if ('date' in patch) {
+          if (patch.date === undefined) delete next.date;
+          else next.date = patch.date;
+        }
+        return next;
+      }),
+    });
+
     const fileEditsForPath = (path: string) => Object.entries(get().fileEdits).filter(([, e]) => e.path === path);
 
     return {
       ready: false,
+      mode: initialMode,
+      focusNode: null,
       doc: emptyDoc(),
       parseError: null,
       settings: { gridEnabled: false },
@@ -268,6 +316,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       dropHint: false,
       mouseFlow: null,
       snapGuides: [],
+      features,
 
       init(text, settings) {
         sync.reset(text);
@@ -353,6 +402,17 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
         }
       },
 
+      setMode(mode) {
+        if (mode === get().mode) return;
+        get().setEditing(null);
+        set({ mode, selNodes: [], selEdges: [], editing: null, labelEditing: null, contextMenu: null, chooser: null, endpointDrag: null, snapGuides: [], tool: 'select' });
+      },
+
+      showInChaos(id) {
+        get().setMode('chaos');
+        set({ selNodes: [id], selEdges: [], focusNode: id });
+      },
+
       setSelection(nodes, edges) {
         const s = get();
         const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -388,6 +448,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       moveNodes(moves) {
+        if (!chaosOnly()) return;
         const byId = new Map(moves.map((m) => [m.id, m]));
         const doc = get().doc;
         set({
@@ -402,6 +463,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       resizeNode(id, width, height) {
+        if (!chaosOnly()) return;
         mapNode(
           id,
           (n) => {
@@ -418,20 +480,24 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       finishResize() {
+        if (!chaosOnly()) return;
         get().setSnapGuides([]);
         get().commit();
       },
 
       updateNode(id, patch, commit = true) {
+        if (!chaosOnly()) return;
         mapNode(id, (n) => ({ ...n, ...patch }) as BoardNode, commit);
       },
 
       updateEdge(id, patch, commit = true) {
+        if (!chaosOnly()) return;
         const doc = get().doc;
         apply({ ...doc, edges: doc.edges.map((e) => (isBoardEdge(e) && e.id === id ? { ...e, ...patch } : e)) }, commit);
       },
 
       createNode(init, from) {
+        if (!chaosOnly()) return '';
         const node = buildNode(init);
         const doc = get().doc;
         const source = from ? boardNodes(doc).find((n) => n.id === from.nodeId) : undefined;
@@ -460,12 +526,14 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       createFileNodes(paths, at) {
+        if (!chaosOnly()) return;
         if (paths.length === 0) return;
         const nodes = paths.map((file, i) => buildNode({ kind: 'file', center: { x: at.x + i * 20, y: at.y + i * 20 }, file }));
         addFragment({ nodes, edges: [] });
       },
 
       connect(from, to) {
+        if (!chaosOnly()) return undefined;
         if (from.nodeId === to.nodeId) return undefined;
         const edge: BoardEdge = {
           id: newId(),
@@ -488,31 +556,93 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       reconnect(edgeId, end, nodeId, anchor) {
+        if (!chaosOnly()) return;
         const patch: Partial<BoardEdge> =
           end === 'from' ? { fromNode: nodeId, fromSide: anchor.side, fromOffset: anchor.offset } : { toNode: nodeId, toSide: anchor.side, toOffset: anchor.offset };
         get().updateEdge(edgeId, patch);
       },
 
+      addToPlan(type, nodeIds) {
+        const doc = get().doc;
+        const known = new Set(boardNodes(doc).map((n) => n.id));
+        const plan = planOf(doc, type);
+        const have = new Set(plan.items);
+        const add = nodeIds.filter((id, i) => known.has(id) && !have.has(id) && nodeIds.indexOf(id) === i);
+        if (add.length === 0) return;
+        apply(withPlan(doc, { ...plan, items: [...plan.items, ...add] }));
+      },
+
+      removeFromPlan(type, nodeIds) {
+        const doc = get().doc;
+        const plan = planOf(doc, type);
+        const gone = new Set(nodeIds);
+        if (!plan.items.some((id) => gone.has(id))) return;
+        apply(withPlan(doc, { ...plan, items: plan.items.filter((id) => !gone.has(id)) }));
+        set({ selNodes: get().selNodes.filter((id) => !gone.has(id)) });
+      },
+
+      setStatus(nodeIds, status) {
+        const doc = get().doc;
+        const ids = new Set(nodeIds);
+        if (boardNodes(doc).filter((n) => ids.has(n.id)).every((n) => statusOf(n) === status)) return;
+        apply(patchPlanFields(doc, ids, { status }));
+      },
+
+      setDate(nodeIds, date) {
+        const doc = get().doc;
+        const ids = new Set(nodeIds);
+        if (boardNodes(doc).filter((n) => ids.has(n.id)).every((n) => n.date === date)) return;
+        apply(patchPlanFields(doc, ids, { date }));
+      },
+
+      moveCard(type, nodeId, to) {
+        const doc = get().doc;
+        const node = boardNodes(doc).find((n) => n.id === nodeId);
+        if (!node) return;
+        const ids = new Set([nodeId]);
+        let next = doc;
+        if (to.status !== undefined && to.status !== statusOf(node)) next = patchPlanFields(next, ids, { status: to.status });
+        if ('date' in to && to.date !== node.date) next = patchPlanFields(next, ids, { date: to.date });
+        const plan = planOf(next, type);
+        let items = plan.items;
+        if (to.index !== undefined) {
+          const status = to.status ?? statusOf(node);
+          const lane = planNodes(next, plan)
+            .filter((n) => n.id !== nodeId && statusOf(n) === status)
+            .map((n) => n.id);
+          items = placeInLane(plan.items, nodeId, lane, to.index);
+        }
+        const reordered = items.length !== plan.items.length || items.some((id, i) => id !== plan.items[i]);
+        if (reordered) next = withPlan(next, { ...plan, items });
+        if (next !== doc) apply(next);
+      },
+
       deleteSelection() {
+        if (!chaosOnly()) return;
         const { doc, selNodes, selEdges } = get();
         if (selNodes.length === 0 && selEdges.length === 0) return;
         const nodeIds = new Set(selNodes);
         const edgeIds = new Set(selEdges);
-        const next: CanvasDoc = {
-          ...doc,
-          nodes: doc.nodes.filter((n) => !(isBoardNode(n) && nodeIds.has(n.id))),
-          edges: doc.edges.filter((e) => !(isBoardEdge(e) && (edgeIds.has(e.id) || nodeIds.has(e.fromNode) || nodeIds.has(e.toNode)))),
-        };
+        const next: CanvasDoc = withoutNodes(
+          {
+            ...doc,
+            nodes: doc.nodes.filter((n) => !(isBoardNode(n) && nodeIds.has(n.id))),
+            edges: doc.edges.filter((e) => !(isBoardEdge(e) && (edgeIds.has(e.id) || nodeIds.has(e.fromNode) || nodeIds.has(e.toNode)))),
+          },
+          nodeIds,
+        );
         set({ selNodes: [], selEdges: [], editing: null, labelEditing: null });
         apply(next);
       },
 
       deleteNode(id) {
+        if (!chaosOnly()) return;
         set({ selNodes: [id], selEdges: [] });
         get().deleteSelection();
       },
 
       deleteEdge(id) {
+        if (!chaosOnly()) return;
         set({ selNodes: [], selEdges: [id] });
         get().deleteSelection();
       },
@@ -523,6 +653,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       pasteText(text, viewCenter, at) {
+        if (!chaosOnly()) return;
         const mouseFlow = at ?? get().mouseFlow;
         const step = gridStep();
         const fragment = parseFragment(text);
@@ -539,6 +670,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void): Board
       },
 
       duplicateSelection() {
+        if (!chaosOnly()) return;
         const { doc, selNodes } = get();
         const text = buildFragment(doc, selNodes);
         const fragment = text ? parseFragment(text) : null;

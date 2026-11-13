@@ -134,4 +134,98 @@ describe('canvasFormat', () => {
     expect(darken('#808080', 0.25)).toBe('#606060');
     expect(resolveColor(undefined)).toBeUndefined();
   });
+
+  describe('plans', () => {
+    it('round-trips a file with plans, status and date to identical text', () => {
+      const text = fixture('plans.canvas');
+      expect(serialize(parseOk(text))).toBe(text);
+    });
+
+    it('parses plans, status and date', () => {
+      const doc = parseOk(fixture('plans.canvas'));
+      expect(doc.plans.map((p) => [p.id, p.type, p.items])).toEqual([
+        ['p1', 'board', ['n1', 'n2']],
+        ['p2', 'timeline', ['n1']],
+      ]);
+      expect(doc.plans[0].extra).toEqual({ future: true });
+      expect(doc.konektonExtra).toEqual({ version: 1, other: { a: 1 } });
+      const [n1, n2] = boardNodes(doc);
+      expect(n1).toMatchObject({ status: 'inProgress', date: '2026-11-03' });
+      expect(n2).toMatchObject({ status: 'done' });
+      expect(n2.date).toBeUndefined();
+    });
+
+    it('writes no top-level konekton key for a file without plans', () => {
+      const out = JSON.parse(serialize(parseOk(fixture('sample.canvas'))));
+      expect(out).not.toHaveProperty('konekton');
+      expect(Object.keys(out)).toEqual(['nodes', 'edges']);
+    });
+
+    it('writes konekton after edges and before other keys', () => {
+      const doc = parseOk(fixture('plans.canvas'));
+      doc.extra = { metadata: 1 };
+      expect(Object.keys(JSON.parse(serialize(doc)))).toEqual(['nodes', 'edges', 'konekton', 'metadata']);
+    });
+
+    it('skips invalid plans and cleans up items', () => {
+      const doc = parseOk(
+        JSON.stringify({
+          nodes: [],
+          edges: [],
+          konekton: { plans: [{ id: 1, type: 'board' }, { id: 'a', type: 'nope' }, 7, { id: 'ok', type: 'timeline', items: ['x', 'x', 3, 'y'] }] },
+        }),
+      );
+      expect(doc.plans).toHaveLength(1);
+      expect(doc.plans[0]).toMatchObject({ id: 'ok', name: 'Timeline', items: ['x', 'y'] });
+    });
+
+    it('keeps plan data it does not understand through a save', () => {
+      const unknownPlans = [{ id: 'l', type: 'list', items: ['a'] }, 7];
+      const mixed = parseOk(JSON.stringify({ nodes: [], edges: [], konekton: { plans: [{ id: 'b', type: 'board' }, ...unknownPlans] } }));
+      expect(mixed.plans.map((p) => p.id)).toEqual(['b']);
+      expect(JSON.parse(serialize(mixed)).konekton.plans.slice(1)).toEqual(unknownPlans);
+
+      const onlyUnknown = parseOk(JSON.stringify({ nodes: [], edges: [], konekton: { plans: unknownPlans } }));
+      expect(JSON.parse(serialize(onlyUnknown)).konekton.plans).toEqual(unknownPlans);
+
+      const notArray = parseOk(JSON.stringify({ nodes: [], edges: [], konekton: { plans: 'later' } }));
+      expect(JSON.parse(serialize(notArray)).konekton).toEqual({ plans: 'later' });
+
+      const notObject = parseOk(JSON.stringify({ nodes: [], edges: [], konekton: 'v2' }));
+      expect(JSON.parse(serialize(notObject)).konekton).toBe('v2');
+      notObject.plans = [{ id: 'b', type: 'board', name: 'Board', items: [], extra: {} }];
+      expect(JSON.parse(serialize(notObject)).konekton.plans).toHaveLength(1);
+    });
+
+    it('keeps ids of missing nodes in plans', () => {
+      const doc = parseOk(JSON.stringify({ nodes: [], edges: [], konekton: { plans: [{ id: 'a', type: 'board', items: ['gone'] }] } }));
+      expect(doc.plans[0].items).toEqual(['gone']);
+    });
+
+    it('keeps invalid status and date values through a save', () => {
+      const text = JSON.stringify({
+        nodes: [{ id: 'a', type: 'text', x: 0, y: 0, width: 200, height: 200, color: '3', text: '', konekton: { kind: 'sticky', fontSize: 18, align: 'center', bold: false, status: 'nope', date: '2026-02-30' } }],
+        edges: [],
+      });
+      const doc = parseOk(text);
+      const n = boardNodes(doc)[0];
+      expect(n.status).toBeUndefined();
+      expect(n.date).toBeUndefined();
+      const out = JSON.parse(serialize(doc));
+      expect(out.nodes[0].konekton).toMatchObject({ status: 'nope', date: '2026-02-30' });
+
+      n.status = 'done';
+      n.date = '2026-03-01';
+      const fixed = parseOk(serialize(doc));
+      expect(boardNodes(fixed)[0]).toMatchObject({ status: 'done', date: '2026-03-01' });
+    });
+
+    it('writes a konekton field for a link with only a status', () => {
+      const doc = parseOk(JSON.stringify({ nodes: [{ id: 'l', type: 'link', x: 0, y: 0, width: 280, height: 60, url: 'https://a.b' }], edges: [] }));
+      expect(JSON.parse(serialize(doc)).nodes[0]).not.toHaveProperty('konekton');
+      const link = boardNodes(doc)[0];
+      link.status = 'done';
+      expect(JSON.parse(serialize(doc)).nodes[0].konekton).toEqual({ status: 'done' });
+    });
+  });
 });

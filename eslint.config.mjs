@@ -5,7 +5,7 @@ export default tseslint.config(
   { ignores: ['dist/**', 'out/**', 'node_modules/**', '.vscode-test/**'] },
   ...tseslint.configs.recommended,
   {
-    files: ['webview/src/**/*.{ts,tsx}'],
+    files: ['webview/src/**/*.{ts,tsx}', 'web/src/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     rules: {
       'react-hooks/rules-of-hooks': 'error',

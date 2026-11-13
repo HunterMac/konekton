@@ -2,7 +2,7 @@
   "name": "konekton",
   "displayName": "Konekton",
   "description": "A Miro-like board for VS Code: sticky notes, rectangles, file references and connection lines, stored as .canvas files.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "TODO-publisher",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -44,6 +44,7 @@
     }
   },
   "scripts": {
+    "dev": "vite --config web/vite.config.mts",
     "build": "npm run typecheck && node esbuild.mjs && vite build --config webview/vite.config.mts",
     "build:extension": "node esbuild.mjs",
     "build:webview": "vite build --config webview/vite.config.mts",
@@ -52,7 +53,7 @@
     "test:unit": "vitest run",
     "test:integration": "npm run build && npm run compile-tests && vscode-test",
     "lint": "eslint .",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit && tsc -p web/tsconfig.json --noEmit && tsc -p web/tsconfig.node.json --noEmit",
     "package": "vsce package --no-dependencies",
     "vscode:prepublish": "npm run build"
   },
@@ -87,10 +88,7 @@
   "overrides": {
     "serialize-javascript": "^7.0.5",
     "diff": "^8.0.3",
-    "@vscode/test-cli": {
-      "mocha": {
-        "glob": "^13.0.6"
-      }
-    }
+    "minimatch": "^11.0.3",
+    "glob": "^14.0.3"
   }
 }

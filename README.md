@@ -17,6 +17,16 @@ Every object shows four balls in the middle of its edges. Drag from a ball to an
 
 Also included: infinite board with pan and zoom, grid with snapping, multi-select and box select, copy / paste / duplicate / delete, a right-click menu, and undo / redo through the normal VS Code commands (every board action is one undo step).
 
+### Views: Chaos, Board and Timeline
+
+One file, three views. Switch with the buttons at the top centre; the objects move to their new place in a short animation.
+
+- **Chaos** (create) – the free board described above. It is the only view where you create, edit, move or delete objects.
+- **Board** (plan) – the items you added to the Board as cards in three lanes: Todo, In progress, Done. Drag a card to another lane to change its status, or inside a lane to change the order.
+- **Timeline** (do) – the items you added to the Timeline on a horizontal arrow. Pick Days, Weeks or Months at the top right. Drag a card onto a segment to set its date. A card dropped on a week or month keeps its date when it is already in that week or month, otherwise it gets the first day (Monday, or the 1st). Cards without a date sit in the Unscheduled area; drop a card there to clear its date.
+
+Status and date belong to the item, so they are the same in every view. One item can be on the Board and on the Timeline at the same time. In Chaos, items on a plan show a small dot per plan in the top right corner, and done items are faded with a check mark. Board and Timeline never move items on the Chaos board.
+
 ### Using the board
 
 | Action | How |
@@ -32,6 +42,12 @@ Also included: infinite board with pan and zoom, grid with snapping, multi-selec
 | Copy / paste / duplicate | Ctrl/Cmd+C, Ctrl/Cmd+V, Ctrl/Cmd+D, or the right-click menu. |
 | Delete | Delete or Backspace, the toolbar, or the right-click menu. |
 | Undo / redo | Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (inside a text field they act on the text). |
+| Switch view | The **Chaos / Board / Timeline** buttons at the top centre. |
+| Add to a plan | In Chaos, right-click one or more items and choose **Add to Board** or **Add to Timeline**. |
+| Change status | In Chaos, right-click → **Status**. In Board, drag the card to another lane or use the right-click menu. |
+| Change date | In Timeline, drag the card to a segment, or to Unscheduled to clear the date. |
+| Take a card out of a plan | In Board or Timeline, select it and press Delete, or right-click → **Remove from Board / Timeline**. The item stays in Chaos. |
+| Find a card in Chaos | Double-click the card, or right-click → **Show in Chaos**. |
 
 ### Hold Shift to drop files
 
@@ -50,6 +66,26 @@ There is no "New Board" command in this version. Create an empty file with the `
 ## File format
 
 Boards are [JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/) files. Konekton keeps its own data (kind of note, font size, line end offsets, …) in one `konekton` field on nodes and edges. Things it does not understand (for example `group` nodes) are kept in the file untouched. Compatibility with other canvas editors is not a goal of this version.
+
+Plans live in a top-level `konekton` key, and status and date in the `konekton` field of each node:
+
+```json
+{
+  "nodes": [
+    { "id": "n1", "type": "text", "text": "Call plumber", "konekton": { "kind": "sticky", "status": "inProgress", "date": "2026-11-03" } }
+  ],
+  "edges": [],
+  "konekton": {
+    "version": 1,
+    "plans": [
+      { "id": "p1", "type": "board", "name": "Board", "items": ["n1"] },
+      { "id": "p2", "type": "timeline", "name": "Timeline", "items": ["n1"] }
+    ]
+  }
+}
+```
+
+`status` is `todo` (the default, not written), `inProgress` or `done`. `date` is a local calendar date, `YYYY-MM-DD`. Which view is open, the timeline scale and the camera of each view are kept per editor tab, not in the file. Files without plans are saved exactly as before.
 
 ## Limitations of version 1
 
@@ -76,7 +112,25 @@ npm run package        # builds konekton-<version>.vsix
 
 Press F5 ("Run Extension") to start an Extension Development Host with the sample boards in `test/fixtures`.
 
-Source layout: `src/extension` (extension host), `src/shared` (file format, protocol, paths – used by both sides, must not import `vscode`), `webview/src` (React + React Flow UI).
+Source layout: `src/extension` (extension host), `src/shared` (file format, protocol, paths – used by both sides, must not import `vscode`), `webview/src` (React + React Flow UI), `web/` (web app for testing: host, ports, dev-server plugin).
+
+### Web version
+
+For fast testing, the same board runs as a standalone web app:
+
+```sh
+npm run dev            # then open the printed address (default http://localhost:5173)
+```
+
+- Boards are real `.canvas` files in `boards/` (git-ignored). The folder is filled with copies of `test/fixtures/*.canvas` on the first start only. `KONEKTON_BOARDS=<path> npm run dev` uses another folder.
+- The start page lists the boards and has **New board**. A board's address is `/?board=<name>.canvas`.
+- Auto save 300 ms after the last change; Ctrl/Cmd+S saves at once. Undo/redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl+Y (history is lost on page reload).
+- The same file can be open in VS Code at the same time. An outside change reloads the board when nothing is unsaved; otherwise the board asks: **Reload from server** or **Save my version as `<name>_web.canvas`**.
+- Not in the web version: file references (existing ones show their path only) and dropping files.
+- Safety: the dev server stays on `localhost` and reads and writes only `.canvas` files directly in the boards folder. Do not use `--host`; the server refuses to start with it. Open it as `localhost`, not a LAN address: the clipboard needs a secure context.
+- If outside changes are not seen (network drives, `/mnt/c` in WSL), try `CHOKIDAR_USEPOLLING=1 npm run dev`.
+- The code: `web/server` (Vite plugin: board endpoints, request checks, file watching), `web/src/host` (`WebHost` answers the same messages as the extension's `BoardSession`), `web/src/ports` (storage, clipboard and tabs, dialogs, settings, view state – swap one to change where a feature comes from). The board UI is shared through `webview/src/bootstrap.tsx`.
+
 
 ### Manual test checklist
 
@@ -99,3 +153,31 @@ Run through this in the Extension Development Host before a release.
 - [ ] Hold Shift and drop files from the Explorer onto the board.
 - [ ] Mouse wheel zooms, trackpad scroll pans, pinch zooms, Space+drag pans; zoom controls and the 100 % reset work. Pan/zoom survives a tab switch.
 - [ ] Link: double-click opens the browser; right-click → Edit URL; non-http URLs are rejected.
+- [ ] Views: open `sample.canvas`, switch Chaos → Board → Timeline → Chaos. The file is not marked as changed and there is no undo step.
+- [ ] Views: in Chaos add items to the Board and the Timeline (right-click). Drag cards between lanes and inside a lane, drag cards onto Days / Weeks / Months segments and to Unscheduled. Change the scale. Every drop is one undo step; switching and scale are none.
+- [ ] Views: status and date set in one view show in the other. Done items are faded with a check mark in Chaos; items on a plan show their dots.
+- [ ] Views: delete a planned item in Chaos, then undo: it is back in the plans. In Board/Timeline, Delete only removes the card from that plan; Ctrl+C/V/D do nothing.
+- [ ] Views: double-click a card and use **Show in Chaos**: Chaos opens centred on the item, selected.
+- [ ] Views: edit the file as text while a plan view is open; the view follows. Close and reopen the file: plans, statuses, dates, the open view and the cameras are restored.
+- [ ] Views: with "reduce motion" on, switching is instant.
+
+### Web version checklist
+
+Run with `npm run dev` in Chrome and Firefox.
+
+- [ ] `npm run dev` prints the address and the boards folder and does not open a browser. First start fills `boards/`; `git status` does not show `boards/`.
+- [ ] Start page lists the boards. "New board" with name `plan` creates `plan.canvas` and opens it. Same name again: message, no overwrite. Name `../x`: message.
+- [ ] Open `sample.canvas`. Create, move, connect, style objects. The file on disk updates about 300 ms after the last change. Ctrl/Cmd+S saves at once and shows no "Save page" box.
+- [ ] The file tool and the "File reference" chooser item are missing. Existing file objects show their path, no "Loading…", no open button, no right-click "Open in editor".
+- [ ] Undo/redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl+Y. Each board action is one step. In a sticky's text, Ctrl+Z undoes the text only. Switching views or the timeline scale adds no step.
+- [ ] Reload the page: the view, the cameras and the timeline scale are kept for this tab. Grid on/off is kept for all boards and follows in a second tab.
+- [ ] Right-click Copy, then right-click Paste. Chrome asks once; Firefox shows a "Paste" button. Refused: nothing is pasted. Ctrl/Cmd+C/V need no permission.
+- [ ] New link and Edit URL use the browser prompt; `ftp://x` is refused with a message. Double-click opens a new tab.
+- [ ] Open the same board in VS Code. Change it there and save, with nothing unsaved in the browser: the browser board updates and shows "Reloaded: the file changed on server". Ctrl+Z does nothing then.
+- [ ] Start typing in a sticky in the browser and keep the text field open. Change and save the same file in VS Code: the question appears (the typed text counts as unsaved). The board cannot be changed with mouse or keys while it is shown; Esc does not close it. "Reload" shows the VS Code version. "Save my version" opens `sample_web.canvas` (address changes); doing it again gives `sample_web-2.canvas`.
+- [ ] Your own saves never show "Reloaded" or the question.
+- [ ] Break the JSON in VS Code: the board shows "Cannot read this board". "Open as text" opens a tab with the error, the note and the raw text. Fix the file: the board and the raw tab both update.
+- [ ] Delete the open board file outside: the start page opens with "The board was deleted on the server."
+- [ ] Close the tab within 300 ms of a change: the browser asks first.
+- [ ] `KONEKTON_BOARDS=/tmp/kb npm run dev` uses that folder.
+- [ ] `npm run build` and the VS Code extension still work.

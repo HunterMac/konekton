@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Background,
   BackgroundVariant,
@@ -6,7 +6,10 @@ import {
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
+  getViewportForBounds,
   useReactFlow,
+  useStore,
+  useStoreApi,
   type Connection,
   type EdgeChange,
   type FinalConnectionState,
@@ -20,11 +23,17 @@ import { CLIPBOARD_MIME } from './clipboard';
 import { boundsOf, hitTest, nearestBorderAnchor, type Point, type Rect } from './geometry';
 import { intersects, snapMove } from './snapping';
 import { useBoard, useBoardStore } from './useBoard';
-import { loadViewState, saveViewState } from './vscodeApi';
+import { loadViewState, updateViewState, type SavedViewport } from './host';
+import { membership, planNodes, planOf, type Mode } from './plans';
+import { dropDate, originFor, today, type Scale } from './layout/dates';
+import { boardDropTarget, layoutBoard } from './layout/boardLayout';
+import { SEGMENT_WIDTH, UNSCHEDULED_KEY, layoutTimeline, timelineDropTarget } from './layout/timelineLayout';
+import { CARD, type PlanLayout } from './layout/types';
 import { StickyNode } from './nodes/StickyNode';
 import { RectangleNode } from './nodes/RectangleNode';
 import { FileNode } from './nodes/FileNode';
 import { LinkNode } from './nodes/LinkNode';
+import { CardNode } from './nodes/CardNode';
 import { CurvedEdge, type CurvedRFEdge } from './edges/CurvedEdge';
 import { ConnectionLine } from './edges/ConnectionLine';
 import { LeftToolbar } from './ui/LeftToolbar';
@@ -32,14 +41,36 @@ import { ZoomControls } from './ui/ZoomControls';
 import { NewObjectChooser } from './ui/NewObjectChooser';
 import { ContextMenu } from './ui/ContextMenu';
 import { SnapGuides } from './ui/SnapGuides';
+import { ViewSwitcher } from './ui/ViewSwitcher';
+import { TimelineScale } from './ui/TimelineScale';
+import { PlanBackground } from './ui/PlanBackground';
 
-const nodeTypes = { sticky: StickyNode, rectangle: RectangleNode, file: FileNode, link: LinkNode };
+const nodeTypes = { sticky: StickyNode, rectangle: RectangleNode, file: FileNode, link: LinkNode, card: CardNode };
 const edgeTypes = { curved: CurvedEdge };
 
 type Move = { id: string; x: number; y: number };
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
+/** Length of the switch between views. */
+const MORPH_MS = 300;
+/** Segments shown beyond the visible part of the Timeline arrow. */
+const RANGE_MARGIN = 4;
+/** The most segments the arrow draws at once, so a far zoom-out stays light. */
+const MAX_SEGMENTS = 300;
+
+const EMPTY_HINTS: Record<'board' | 'timeline', string> = {
+  board: 'Nothing here yet. In Chaos, right-click an item and choose Add to Board.',
+  timeline: 'Nothing here yet. In Chaos, right-click an item and choose Add to Timeline.',
+};
+
+const prefersReducedMotion = (): boolean => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** What the switch between two views animates: nodes that leave fade out, nodes that enter fade in. */
+interface Morph {
+  ghosts: Node[];
+  entering: ReadonlySet<string>;
+}
 
 const isTextField = (target: EventTarget | null): boolean => {
   const el = target as HTMLElement | null;
@@ -73,7 +104,13 @@ function Board() {
   const store = useBoardStore();
   const rf = useReactFlow();
   const rootRef = useRef<HTMLDivElement>(null);
-  const savedViewport = useMemo(() => loadViewState().viewport, []);
+  const initial = useMemo(() => loadViewState(), []);
+  const viewports = useRef(initial.viewports ?? {});
+  const savedViewport = useMemo(() => viewports.current[store.getState().mode], [store]);
+  const [scale, setScale] = useState<Scale>(initial.timelineScale ?? 'days');
+  const [dragPreview, setDragPreview] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [morph, setMorph] = useState<Morph | null>(null);
 
   const doc = useBoard((s) => s.doc);
   const selNodes = useBoard((s) => s.selNodes);
@@ -83,6 +120,24 @@ function Board() {
   const tool = useBoard((s) => s.tool);
   const parseError = useBoard((s) => s.parseError);
   const dropHint = useBoard((s) => s.dropHint);
+  const mode = useBoard((s) => s.mode);
+  const [todayDate, setTodayDate] = useState(today);
+
+  // The date moves on at midnight. A check each minute also catches a wake from sleep, and a tab shown again.
+  useEffect(() => {
+    const check = () => setTodayDate(today());
+    const timer = window.setInterval(check, 60_000);
+    document.addEventListener('visibilitychange', check);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', check);
+    };
+  }, []);
+
+  // Every mode change is saved, whether it came from the switcher or from "Show in Chaos".
+  useEffect(() => {
+    updateViewState({ mode });
+  }, [mode]);
 
   const viewCenter = useCallback((): Point => {
     const rect = rootRef.current?.getBoundingClientRect();
@@ -96,8 +151,52 @@ function Board() {
 
   // --- Derived React Flow state ------------------------------------------------------------
 
-  const nodes = useMemo<Node[]>(() => {
+  // The visible part of the Timeline arrow, in segments. A string, so panning inside one segment does not re-render.
+  // Other views do not use it, so there it stays constant and panning never re-renders.
+  const rangeKey = useStore((st) => {
+    if (mode !== 'timeline') return '0:0';
+    const [x, , zoom] = st.transform;
+    const from = Math.floor(-x / zoom / SEGMENT_WIDTH) - RANGE_MARGIN;
+    const to = Math.ceil((-x + st.width) / zoom / SEGMENT_WIDTH) + RANGE_MARGIN;
+    return `${from}:${Math.min(to, from + MAX_SEGMENTS)}`;
+  });
+  const range = useMemo(() => {
+    const [from, to] = rangeKey.split(':').map(Number);
+    return { from, to };
+  }, [rangeKey]);
+
+  const planned = useMemo(() => (mode === 'chaos' ? [] : planNodes(doc, planOf(doc, mode))), [doc, mode]);
+  const layout = useMemo<PlanLayout | null>(
+    () => (mode === 'board' ? layoutBoard(planned) : mode === 'timeline' ? layoutTimeline(planned, scale, todayDate, range) : null),
+    [mode, planned, scale, todayDate, range],
+  );
+  const plansOf = useMemo(() => membership(doc), [doc]);
+
+  /** Latest values for handlers that run inside React Flow callbacks. */
+  const live = useRef({ layout, planned, scale, todayDate });
+  useEffect(() => {
+    live.current = { layout, planned, scale, todayDate };
+  }, [layout, planned, scale, todayDate]);
+
+  const baseNodes = useMemo<Node[]>(() => {
     const selected = new Set(selNodes);
+    if (layout) {
+      const models = new Map(planned.map((n) => [n.id, n]));
+      return layout.cards.map((box) => {
+        const at = dragPreview?.id === box.id ? dragPreview : box;
+        return {
+          id: box.id,
+          type: 'card',
+          position: { x: at.x, y: at.y },
+          width: box.width,
+          height: box.height,
+          measured: { width: box.width, height: box.height },
+          data: { model: models.get(box.id)!, showDate: mode === 'timeline' },
+          selected: selected.has(box.id),
+          connectable: false,
+        };
+      });
+    }
     return boardNodes(doc).map((n) => ({
       id: n.id,
       type: n.kind,
@@ -106,13 +205,20 @@ function Board() {
       height: n.height,
       // Without `measured`, React Flow drops the handle bounds on every update and lines flicker.
       measured: { width: n.width, height: n.height },
-      data: { model: n },
+      data: { model: n, plans: plansOf.get(n.id) },
       selected: selected.has(n.id),
       draggable: editingId !== n.id,
     }));
-  }, [doc, selNodes, editingId]);
+  }, [doc, selNodes, editingId, layout, planned, dragPreview, mode, plansOf]);
+
+  const nodes = useMemo<Node[]>(() => {
+    if (!morph) return baseNodes;
+    const entering = baseNodes.map((n) => (morph.entering.has(n.id) ? { ...n, className: 'eb-entering' } : n));
+    return [...entering, ...morph.ghosts];
+  }, [baseNodes, morph]);
 
   const edges = useMemo<CurvedRFEdge[]>(() => {
+    if (mode !== 'chaos') return [];
     const rects = new Map(boardNodes(doc).map((n) => [n.id, n]));
     const selected = new Set(selEdges);
     return drawableEdges(doc).map((e) => ({
@@ -125,7 +231,103 @@ function Board() {
       selected: selected.has(e.id),
       data: { model: e, fromRect: rects.get(e.fromNode)!, toRect: rects.get(e.toNode)! },
     }));
-  }, [doc, selEdges]);
+  }, [doc, selEdges, mode]);
+
+  // --- Viewport per view, and the switch between views -------------------------------------
+
+  const rememberViewport = useCallback(
+    (at: Mode, viewport: SavedViewport) => {
+      viewports.current = { ...viewports.current, [at]: viewport };
+      updateViewState({ viewports: viewports.current });
+    },
+    [],
+  );
+
+  /** A viewport that shows the whole view, never zoomed in past 100%. */
+  const homeViewport = (at: Mode): SavedViewport => {
+    const size = rootRef.current?.getBoundingClientRect();
+    const current = store.getState().doc;
+    let rects: Rect[];
+    if (at === 'chaos') {
+      rects = boardNodes(current);
+    } else if (at === 'board') {
+      const l = layoutBoard(planNodes(current, planOf(current, 'board')));
+      rects = [...l.regions, ...l.cards];
+    } else {
+      // The segments around today, and the cards that sit above them.
+      const l = layoutTimeline(planNodes(current, planOf(current, 'timeline')), scale, todayDate, { from: 0, to: 7 });
+      rects = [...l.regions.filter((r) => r.x < 8 * SEGMENT_WIDTH), ...l.cards.filter((c) => c.x >= 0 && c.x < 8 * SEGMENT_WIDTH)];
+    }
+    const bounds = boundsOf(rects);
+    if (!bounds || !size || size.width === 0) return { x: 0, y: 0, zoom: 1 };
+    return getViewportForBounds(bounds, size.width, size.height, MIN_ZOOM, 1, '60px');
+  };
+
+  const morphTimer = useRef<number | undefined>(undefined);
+  const lastRendered = useRef<{ mode: Mode; nodes: Node[] }>({ mode, nodes: baseNodes });
+  useEffect(() => {
+    lastRendered.current = { mode, nodes: baseNodes };
+  }, [mode, baseNodes]);
+
+  // First paint of a plan view that was never opened: show the whole view.
+  useLayoutEffect(() => {
+    if (mode !== 'chaos' && !viewports.current[mode]) void rf.setViewport(homeViewport(mode));
+    // Runs once, for the mode the editor was restored in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const flowStore = useStoreApi();
+  const shownMode = useRef(mode);
+  /** The camera a running view-switch animation moves to. Null when no animation runs. */
+  const cameraTarget = useRef<{ at: Mode; viewport: SavedViewport } | null>(null);
+  useLayoutEffect(() => {
+    const from = shownMode.current;
+    if (from === mode) return;
+    shownMode.current = mode;
+    const duration = prefersReducedMotion() ? 0 : MORPH_MS;
+
+    // Each view keeps its own camera. Mid-animation, that is where the camera was going, not where it is.
+    const running = cameraTarget.current;
+    rememberViewport(from, running && running.at === from ? running.viewport : rf.getViewport());
+
+    if (duration > 0) {
+      const previous = lastRendered.current.nodes;
+      const nowIds = new Set(baseNodes.map((n) => n.id));
+      const beforeIds = new Set(previous.map((n) => n.id));
+      const ghosts = previous
+        .filter((n) => !nowIds.has(n.id))
+        .map((n) => ({ ...n, selected: false, draggable: false, selectable: false, className: 'eb-leaving' }));
+      const entering = new Set([...nowIds].filter((id) => !beforeIds.has(id)));
+      setMorph({ ghosts, entering });
+      window.clearTimeout(morphTimer.current);
+      morphTimer.current = window.setTimeout(() => setMorph(null), duration);
+    }
+
+    const focus = store.getState().focusNode;
+    const target = focus ? boardNodes(store.getState().doc).find((n) => n.id === focus) : undefined;
+    if (focus) store.setState({ focusNode: null });
+    let next: SavedViewport;
+    if (mode === 'chaos' && target) {
+      // Centered on the card, like `rf.setCenter`.
+      const { width, height } = flowStore.getState();
+      const zoom = viewports.current.chaos?.zoom ?? 1;
+      next = { x: width / 2 - (target.x + target.width / 2) * zoom, y: height / 2 - (target.y + target.height / 2) * zoom, zoom };
+    } else {
+      next = viewports.current[mode] ?? homeViewport(mode);
+    }
+    const entry = duration > 0 ? { at: mode, viewport: next } : null;
+    cameraTarget.current = entry;
+    void rf.setViewport(next, { duration });
+    // A timer, not the returned promise: that one never settles when a pan interrupts the animation.
+    if (entry) {
+      window.setTimeout(() => {
+        if (cameraTarget.current === entry) cameraTarget.current = null;
+      }, duration);
+    }
+    // Only a change of view triggers this; the rest is read when it runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+  useEffect(() => () => window.clearTimeout(morphTimer.current), []);
 
   const watchedPaths = useMemo(() => {
     const paths = new Set<string>();
@@ -185,9 +387,73 @@ function Board() {
     [rf, store],
   );
 
+  /** The card being dragged in Board or Timeline. Only that one moves, even with several selected. */
+  const planDragId = useRef<string | null>(null);
+  const lastPreview = useRef<{ id: string; x: number; y: number } | null>(null);
+
+  /** The lane or segment under the center of a card at `at`. */
+  const planTarget = useCallback(
+    (id: string, at: Point) => {
+      const { layout: l, planned: nodes, scale: sc, todayDate: t } = live.current;
+      const mode = store.getState().mode;
+      if (!l) return null;
+      const center = { x: at.x + CARD.width / 2, y: at.y + CARD.height / 2 };
+      if (mode === 'board') {
+        const target = boardDropTarget(l, nodes, id, center);
+        return target ? { key: `lane:${target.status}`, apply: () => store.getState().moveCard('board', id, { status: target.status, index: target.index }) } : null;
+      }
+      const target = timelineDropTarget(l, center);
+      if (!target) return null;
+      if (target.kind === 'unscheduled') return { key: UNSCHEDULED_KEY, apply: () => store.getState().setDate([id], undefined) };
+      const model = nodes.find((n) => n.id === id);
+      return {
+        key: `segment:${target.index}`,
+        apply: () => store.getState().moveCard('timeline', id, { date: dropDate(model?.date, target.index, originFor(t, sc), sc) }),
+      };
+    },
+    [store],
+  );
+
+  const onPlanChanges = useCallback(
+    (changes: NodeChange[]) => {
+      const api = store.getState();
+      const sel = new Set(api.selNodes);
+      let selChanged = false;
+      for (const c of changes) {
+        if (c.type === 'select') {
+          if (c.selected) sel.add(c.id);
+          else sel.delete(c.id);
+          selChanged = true;
+        } else if (c.type === 'position') {
+          if (c.dragging === true && c.position) {
+            planDragId.current ??= c.id;
+            if (planDragId.current !== c.id) continue;
+            lastPreview.current = { id: c.id, x: c.position.x, y: c.position.y };
+            setDragPreview(lastPreview.current);
+            setActiveKey(planTarget(c.id, c.position)?.key ?? null);
+          } else if (c.dragging === false && planDragId.current === c.id) {
+            const at = c.position ?? lastPreview.current;
+            planDragId.current = null;
+            lastPreview.current = null;
+            setDragPreview(null);
+            setActiveKey(null);
+            // One drop is one store action, so one undo step.
+            if (at) planTarget(c.id, at)?.apply();
+          }
+        }
+      }
+      if (selChanged) api.setSelection([...sel], api.selEdges);
+    },
+    [planTarget, store],
+  );
+
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const api = store.getState();
+      if (api.mode !== 'chaos') {
+        onPlanChanges(changes);
+        return;
+      }
       const sel = new Set(api.selNodes);
       let selChanged = false;
       let dragging = false;
@@ -219,7 +485,7 @@ function Board() {
       }
       if (selChanged) api.setSelection([...sel], api.selEdges);
     },
-    [applySnap, store],
+    [applySnap, onPlanChanges, store],
   );
 
   // Ctrl/Cmd switches object snapping off, also in the middle of a drag.
@@ -256,7 +522,10 @@ function Board() {
     [store],
   );
 
-  const commit = useCallback(() => store.getState().commit(), [store]);
+  /** Plan drags commit through their store action, so only Chaos commits here. */
+  const commit = useCallback(() => {
+    if (store.getState().mode === 'chaos') store.getState().commit();
+  }, [store]);
 
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
@@ -334,6 +603,7 @@ function Board() {
   const showMenu = (event: React.MouseEvent, target: { kind: 'node' | 'edge'; id: string } | { kind: 'board' }) => {
     event.preventDefault();
     const api = store.getState();
+    if (api.mode !== 'chaos' && target.kind !== 'node') return;
     if (target.kind === 'node' && !api.selNodes.includes(target.id)) api.setSelection([target.id], []);
     if (target.kind === 'edge' && !api.selEdges.includes(target.id)) api.setSelection([], [target.id]);
     api.setContextMenu({
@@ -350,8 +620,9 @@ function Board() {
     if (!el) return;
     let saveTimer: number | undefined;
     const persist = (viewport: Viewport) => {
+      const at = store.getState().mode;
       window.clearTimeout(saveTimer);
-      saveTimer = window.setTimeout(() => saveViewState({ viewport }), 200);
+      saveTimer = window.setTimeout(() => rememberViewport(at, viewport), 200);
     };
     const onWheel = (e: WheelEvent) => {
       if ((e.target as Element | null)?.closest('.nowheel')) return;
@@ -379,7 +650,7 @@ function Board() {
       el.removeEventListener('wheel', onWheel, { capture: true });
       window.clearTimeout(saveTimer);
     };
-  }, [rf]);
+  }, [rf, rememberViewport, store]);
 
   // --- Keyboard and clipboard --------------------------------------------------------------
 
@@ -392,10 +663,21 @@ function Board() {
         else if (api.chooser) api.setChooser(null);
         else if (api.editing) api.setEditing(null);
         else if (api.tool !== 'select') api.setTool('select');
+        else if (api.mode !== 'chaos' && api.selNodes.length > 0) api.setSelection([], []);
         return;
       }
       if (isTextField(e.target) || api.editing || api.labelEditing) return;
       const mod = e.ctrlKey || e.metaKey;
+      if (api.mode !== 'chaos') {
+        // Plan views never delete or copy items: Delete only takes a card out of the plan.
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault();
+          api.removeFromPlan(api.mode, api.selNodes);
+        } else if (mod && ['c', 'v', 'd', 'x'].includes(e.key.toLowerCase())) {
+          e.preventDefault();
+        }
+        return;
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         api.deleteSelection();
@@ -406,7 +688,7 @@ function Board() {
     };
     const onCopy = (e: ClipboardEvent) => {
       const api = store.getState();
-      if (isTextField(e.target) || api.editing) return;
+      if (api.mode !== 'chaos' || isTextField(e.target) || api.editing) return;
       const text = api.copyText();
       if (!text || !e.clipboardData) return;
       e.clipboardData.setData(CLIPBOARD_MIME, text);
@@ -415,7 +697,7 @@ function Board() {
     };
     const onPaste = (e: ClipboardEvent) => {
       const api = store.getState();
-      if (isTextField(e.target) || api.editing || !e.clipboardData) return;
+      if (api.mode !== 'chaos' || isTextField(e.target) || api.editing || !e.clipboardData) return;
       const text = e.clipboardData.getData(CLIPBOARD_MIME) || e.clipboardData.getData('text/plain');
       if (!text) return;
       e.preventDefault();
@@ -459,14 +741,16 @@ function Board() {
   };
   const hasUris = (e: DragEvent) => Array.from(e.dataTransfer.types).some((t) => t === 'application/vnd.code.uri-list' || t === 'text/uri-list');
 
+  const fileReferences = useBoard((s) => s.features.fileReferences);
   const onDragOver = (e: DragEvent) => {
-    if (!hasUris(e)) return;
+    if (!fileReferences || mode !== 'chaos' || !hasUris(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     store.getState().setDropHint(true);
   };
   const onDrop = (e: DragEvent) => {
     store.getState().setDropHint(false);
+    if (!fileReferences || mode !== 'chaos') return;
     const list = uriList(e);
     if (!list) return;
     e.preventDefault();
@@ -481,12 +765,24 @@ function Board() {
       .then((paths) => store.getState().createFileNodes(paths, at));
   };
 
-  const persistViewport = useCallback((_e: unknown, viewport: Viewport) => saveViewState({ viewport }), []);
+  const persistViewport = useCallback(
+    (_e: unknown, viewport: Viewport) => {
+      // An interrupted view-switch animation ends with an in-between camera; that is not worth keeping.
+      if (cameraTarget.current) return;
+      rememberViewport(store.getState().mode, viewport);
+    },
+    [rememberViewport, store],
+  );
+
+  const onScale = (next: Scale) => {
+    setScale(next);
+    updateViewState({ timelineScale: next });
+  };
 
   return (
     <div
       ref={rootRef}
-      className={`eb-board${tool !== 'select' ? ' eb-tool-active' : ''}`}
+      className={`eb-board${tool !== 'select' ? ' eb-tool-active' : ''}${morph ? ' eb-morphing' : ''}`}
       data-vscode-context='{"preventDefaultContextMenuItems": true}'
       onContextMenu={(e) => e.preventDefault()}
       onPointerMove={onPointerMove}
@@ -504,18 +800,19 @@ function Board() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
-        onConnectEnd={onConnectEnd}
+        onConnectEnd={mode === 'chaos' ? onConnectEnd : undefined}
+        nodesConnectable={mode === 'chaos'}
         connectionMode={ConnectionMode.Loose}
         connectionLineComponent={ConnectionLine}
         defaultViewport={savedViewport ?? { x: 0, y: 0, zoom: 1 }}
-        fitView={!savedViewport && doc.nodes.some(isBoardNode)}
+        fitView={mode === 'chaos' && !savedViewport && doc.nodes.some(isBoardNode)}
         fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
         snapToGrid={false}
-        selectionOnDrag
+        selectionOnDrag={mode === 'chaos'}
         selectionMode={SelectionMode.Partial}
-        panOnDrag={[1]}
+        panOnDrag={mode === 'chaos' ? [1] : [0, 1]}
         panActivationKeyCode="Space"
         multiSelectionKeyCode="Shift"
         zoomOnScroll={false}
@@ -526,6 +823,12 @@ function Board() {
         elevateNodesOnSelect={false}
         disableKeyboardA11y
         attributionPosition="bottom-left"
+        onNodeDragStart={(_e, node) => {
+          planDragId.current = store.getState().mode === 'chaos' ? null : node.id;
+        }}
+        onNodeDoubleClick={(_e, node) => {
+          if (store.getState().mode !== 'chaos') store.getState().showInChaos(node.id);
+        }}
         onNodeDragStop={commit}
         onSelectionDragStop={commit}
         onSelectionStart={() => store.getState().setEditing(null)}
@@ -538,12 +841,16 @@ function Board() {
         onPaneContextMenu={(e) => showMenu(e as unknown as React.MouseEvent, { kind: 'board' })}
       >
         {gridEnabled && <Background variant={BackgroundVariant.Lines} gap={GRID_STEP} color="#EDEDED" lineWidth={1} />}
-        <LeftToolbar />
+        {layout && <PlanBackground mode={mode} layout={layout} activeKey={activeKey} />}
+        <ViewSwitcher />
+        {mode === 'timeline' && <TimelineScale scale={scale} onChange={onScale} />}
+        {mode === 'chaos' && <LeftToolbar />}
         <SnapGuides />
         <ZoomControls />
       </ReactFlow>
       <NewObjectChooser origin={origin()} />
       <ContextMenu origin={origin()} viewCenter={viewCenter} />
+      {layout && mode !== 'chaos' && layout.cards.length === 0 && <div className="eb-empty-hint">{EMPTY_HINTS[mode]}</div>}
       {dropHint && <div className="eb-drop-hint">Hold Shift to drop files onto the board</div>}
       {parseError !== null && (
         <div className="eb-error">

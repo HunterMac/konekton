@@ -4,9 +4,10 @@ import { useBoard, useBoardStore } from '../useBoard';
 import { EditableText } from '../ui/EditableText';
 import { TextToolbar } from '../ui/TextToolbar';
 import { ConnectionBalls } from './ConnectionBalls';
+import { PlanBadges, isDone, type ObjectData } from './PlanBadges';
 import { ResizeCorner } from './ResizeCorner';
 
-export type StickyRFNode = Node<{ model: StickyModel }, 'sticky'>;
+export type StickyRFNode = Node<ObjectData<StickyModel>, 'sticky'>;
 
 export function StickyNode({ id, data }: NodeProps<StickyRFNode>) {
   const node = data.model;
@@ -18,7 +19,7 @@ export function StickyNode({ id, data }: NodeProps<StickyRFNode>) {
     <>
       <TextToolbar node={node} />
       <div
-        className="eb-node eb-sticky"
+        className={`eb-node eb-sticky${isDone(node) ? ' eb-done' : ''}`}
         style={{ background: fill, textAlign: node.align, fontSize: node.fontSize, fontWeight: node.bold ? 700 : 400 }}
         onDoubleClick={() => store.getState().setEditing({ nodeId: id, field: 'body' })}
       >
@@ -29,6 +30,7 @@ export function StickyNode({ id, data }: NodeProps<StickyRFNode>) {
           onExit={() => store.getState().setEditing(null)}
         />
       </div>
+      <PlanBadges node={node} plans={data.plans} />
       <ConnectionBalls />
       <ResizeCorner id={id} square />
     </>

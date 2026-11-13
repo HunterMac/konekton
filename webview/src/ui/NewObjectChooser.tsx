@@ -14,7 +14,9 @@ const CHOICES: { kind: NodeKind; label: string; icon: ReactNode }[] = [
 export function NewObjectChooser({ origin }: { origin: { left: number; top: number } }) {
   const store = useBoardStore();
   const chooser = useBoard((s) => s.chooser);
+  const fileReferences = useBoard((s) => s.features.fileReferences);
   if (!chooser) return null;
+  const choices = fileReferences ? CHOICES : CHOICES.filter((c) => c.kind !== 'file');
 
   const close = () => store.getState().setChooser(null);
   const choose = async (kind: NodeKind) => {
@@ -37,7 +39,7 @@ export function NewObjectChooser({ origin }: { origin: { left: number; top: numb
     <>
       <div className="eb-backdrop" onPointerDown={close} onContextMenu={(e) => e.preventDefault()} />
       <div className="eb-menu eb-ui" style={{ left: chooser.screen.x - origin.left, top: chooser.screen.y - origin.top }}>
-        {CHOICES.map((c) => (
+        {choices.map((c) => (
           <button key={c.kind} type="button" className="eb-menu-item" onClick={() => void choose(c.kind)}>
             {c.icon}
             {c.label}

@@ -651,3 +651,265 @@ textarea.eb-file-text {
   overflow: visible;
   pointer-events: none;
 }
+
+/* ---- Views: switcher, plan cards, lanes and the timeline arrow --------------------------- */
+
+.eb-switcher,
+.eb-scale {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin-top: 12px !important;
+}
+
+.eb-scale {
+  margin-right: 12px !important;
+}
+
+.eb-switch {
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.eb-menu-item.nested {
+  padding-left: 30px;
+}
+
+.eb-menu-more {
+  margin-left: auto;
+  color: var(--eb-muted);
+}
+
+.eb-badges {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: all;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.eb-badge-check {
+  color: #3fa34d;
+  font-size: 12px;
+}
+
+.eb-badge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.eb-badge-dot.board {
+  background: var(--eb-accent);
+}
+
+.eb-badge-dot.timeline {
+  background: #e8890c;
+}
+
+.eb-node.eb-done {
+  opacity: 0.5;
+}
+
+.eb-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1.5px solid;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+  cursor: grab;
+}
+
+.eb-card-body {
+  font-size: 13px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.eb-card-icon {
+  margin-right: 5px;
+  color: var(--eb-muted);
+  vertical-align: -2px;
+}
+
+.eb-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 11px;
+  color: var(--eb-muted);
+}
+
+.eb-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #9aa0a6;
+}
+
+.eb-status-dot.inProgress {
+  background: #e8890c;
+}
+
+.eb-status-dot.done {
+  background: #3fa34d;
+}
+
+.eb-plan-bg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.eb-region {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.eb-region-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--eb-muted);
+}
+
+.eb-region.lane {
+  background: #f5f6f8;
+  border: 1px solid var(--eb-line);
+  border-radius: 8px;
+}
+
+.eb-region.lane .eb-region-label {
+  display: block;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--eb-ink);
+}
+
+.eb-region.segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e9ecf5;
+  border-right: 1px solid #fff;
+}
+
+.eb-region.segment.today {
+  background: var(--eb-accent);
+}
+
+.eb-region.segment.today .eb-region-label {
+  color: #fff;
+}
+
+.eb-region.unscheduled {
+  border: 1.5px dashed #c9ccd3;
+  border-radius: 8px;
+}
+
+.eb-region.unscheduled .eb-region-label {
+  position: absolute;
+  top: -20px;
+  left: 4px;
+}
+
+.eb-region.active {
+  background: rgba(66, 98, 255, 0.1);
+  border-color: var(--eb-accent);
+}
+
+.eb-region.segment.active:not(.today) {
+  background: #cdd6ff;
+}
+
+.eb-column {
+  position: absolute;
+  box-sizing: border-box;
+  border-left: 1px dashed #e6e8ee;
+}
+
+.eb-column.today {
+  background: rgba(66, 98, 255, 0.04);
+}
+
+.eb-column.active {
+  background: rgba(66, 98, 255, 0.1);
+}
+
+.eb-arrow-head {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-top: 18px solid transparent;
+  border-bottom: 18px solid transparent;
+  border-left: 18px solid #e9ecf5;
+}
+
+.eb-empty-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 340px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--eb-muted);
+  pointer-events: none;
+}
+
+/* ---- Switching views ---------------------------------------------------------------------- */
+
+.eb-morphing .react-flow__node {
+  transition:
+    transform 300ms ease,
+    width 300ms ease,
+    height 300ms ease;
+}
+
+.react-flow__node.eb-entering {
+  animation: eb-fade-in 300ms ease both;
+}
+
+.react-flow__node.eb-leaving {
+  animation: eb-fade-out 300ms ease both;
+  pointer-events: none;
+}
+
+@keyframes eb-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes eb-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eb-morphing .react-flow__node {
+    transition: none;
+  }
+
+  .react-flow__node.eb-entering,
+  .react-flow__node.eb-leaving {
+    animation: none;
+  }
+}

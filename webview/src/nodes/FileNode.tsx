@@ -7,9 +7,10 @@ import { Codicon } from '../ui/icons';
 import { keepNativeUndo } from '../ui/textKeys';
 import { TextToolbar } from '../ui/TextToolbar';
 import { ConnectionBalls } from './ConnectionBalls';
+import { PlanBadges, isDone, type ObjectData } from './PlanBadges';
 import { ResizeCorner } from './ResizeCorner';
 
-export type FileRFNode = Node<{ model: FileModel }, 'file'>;
+export type FileRFNode = Node<ObjectData<FileModel>, 'file'>;
 
 function jsonError(path: string, text: string | undefined): string | undefined {
   if (text === undefined || !path.toLowerCase().endsWith('.json')) return undefined;
@@ -27,6 +28,7 @@ export function FileNode({ id, data }: NodeProps<FileRFNode>) {
   const file = useBoard((s) => s.files[node.file]);
   const edit = useBoard((s) => s.fileEdits[id]);
   const editing = useBoard((s) => s.editing?.nodeId === id);
+  const fileReferences = useBoard((s) => s.features.fileReferences);
   const areaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -58,7 +60,10 @@ export function FileNode({ id, data }: NodeProps<FileRFNode>) {
   };
 
   let body;
-  if (missing) {
+  if (!fileReferences) {
+    // The host cannot read files: show the path only.
+    body = null;
+  } else if (missing) {
     body = <div className="eb-file-note">Missing file: {node.file}</div>;
   } else if (status === 'tooLarge') {
     body = <div className="eb-file-note">File too large to preview</div>;
@@ -89,7 +94,7 @@ export function FileNode({ id, data }: NodeProps<FileRFNode>) {
   return (
     <>
       <TextToolbar node={node} />
-      <div className={`eb-node eb-file${missing ? ' missing' : ''}`}>
+      <div className={`eb-node eb-file${missing ? ' missing' : ''}${isDone(node) ? ' eb-done' : ''}`}>
         <div className="eb-file-header" title={node.file}>
           <Codicon name="file" className="eb-file-icon" />
           <span className="eb-path">
@@ -101,7 +106,7 @@ export function FileNode({ id, data }: NodeProps<FileRFNode>) {
               <Codicon name="warning" />
             </span>
           )}
-          {!missing && (
+          {!missing && fileReferences && (
             <button type="button" className="eb-btn eb-open nodrag" title="Open in editor" onClick={() => store.getState().openFile(node.file)}>
               <Codicon name="go-to-file" />
             </button>
@@ -118,8 +123,9 @@ export function FileNode({ id, data }: NodeProps<FileRFNode>) {
             </button>
           </div>
         )}
-        <div className="eb-file-body">{body}</div>
+        {body !== null && <div className="eb-file-body">{body}</div>}
       </div>
+      <PlanBadges node={node} plans={data.plans} />
       <ConnectionBalls />
       <ResizeCorner id={id} />
     </>

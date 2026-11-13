@@ -34,6 +34,20 @@ export const LINK_DEFAULTS = { width: 280, height: 60 };
 export type Json = unknown;
 export type Extra = Record<string, Json>;
 
+export type Status = 'todo' | 'inProgress' | 'done';
+export const STATUSES: readonly Status[] = ['todo', 'inProgress', 'done'];
+export type PlanType = 'board' | 'timeline';
+
+export interface Plan {
+  id: string;
+  type: PlanType;
+  name: string;
+  /** Node ids, in card order. For Board this is also the order inside each lane. */
+  items: string[];
+  /** Unknown keys of this plan, written back unchanged. */
+  extra: Extra;
+}
+
 interface NodeBase {
   id: string;
   x: number;
@@ -41,6 +55,9 @@ interface NodeBase {
   width: number;
   height: number;
   color?: string;
+  status?: Status;
+  /** Local calendar date, `YYYY-MM-DD`. */
+  date?: string;
   /** Unknown top-level keys, written back after the known ones. */
   extra: Extra;
   /** Unknown keys inside `konekton`. */
@@ -113,6 +130,12 @@ export interface CanvasDoc {
   nodes: AnyNode[];
   /** Edge entries in file order; `kind: 'unsupported'` ones are malformed and kept verbatim. */
   edges: (BoardEdge | UnsupportedEdge)[];
+  /** Plans from the top-level `konekton` key. Empty when the file has none. */
+  plans: Plan[];
+  /** Entries of `konekton.plans` that are not valid plans, kept verbatim and written after the valid ones. */
+  otherPlans: Json[];
+  /** Unknown keys inside the top-level `konekton` key. */
+  konektonExtra: Extra;
   /** Unknown top-level keys. */
   extra: Extra;
 }
@@ -128,7 +151,7 @@ export function isBoardEdge(e: BoardEdge | UnsupportedEdge): e is BoardEdge {
 }
 
 export function emptyDoc(): CanvasDoc {
-  return { nodes: [], edges: [], extra: {} };
+  return { nodes: [], edges: [], plans: [], otherPlans: [], konektonExtra: {}, extra: {} };
 }
 
 export function newId(): string {
@@ -172,7 +195,16 @@ const asString = (v: unknown, fallback: string): string => (typeof v === 'string
 const asSide = (v: unknown, fallback: Side): Side => (SIDES as readonly unknown[]).includes(v) ? (v as Side) : fallback;
 const asEnd = (v: unknown, fallback: EndShape): EndShape => (v === 'none' || v === 'arrow' ? v : fallback);
 const asAlign = (v: unknown, fallback: Align): Align => (v === 'left' || v === 'center' || v === 'right' ? v : fallback);
+const isStatus = (v: unknown): v is Status => (STATUSES as readonly unknown[]).includes(v);
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
+
+/** True for a real calendar date written as `YYYY-MM-DD`. */
+export function isValidDate(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [y, m, d] = v.split('-').map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  return probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d;
+}
 
 function splitKeys(obj: Record<string, Json>, known: readonly string[]): Extra {
   const out: Extra = {};
@@ -197,6 +229,14 @@ function parseNode(raw: unknown): AnyNode {
     ...(typeof raw.color === 'string' ? { color: raw.color } : {}),
     extra: splitKeys(raw, NODE_KEYS),
   });
+  const status = isStatus(el.status) ? el.status : undefined;
+  const date = isValidDate(el.date) ? el.date : undefined;
+  const plan = {
+    ...(status !== undefined ? { status } : {}),
+    ...(date !== undefined ? { date } : {}),
+  };
+  // Invalid values stay in `elExtra`, so a save does not lose them.
+  const elKeys = (known: string[]): string[] => [...known, ...(status !== undefined ? ['status'] : []), ...(date !== undefined ? ['date'] : [])];
   const style = (d: TextStyle): TextStyle => ({
     fontSize: asNumber(el.fontSize, d.fontSize),
     align: asAlign(el.align, d.align),
@@ -212,7 +252,8 @@ function parseNode(raw: unknown): AnyNode {
           color: typeof raw.color === 'string' ? raw.color : STICKY_DEFAULTS.color,
           text: asString(raw.text, ''),
           ...style(STICKY_DEFAULTS),
-          elExtra: splitKeys(el, ['kind', 'fontSize', 'align', 'bold']),
+          ...plan,
+          elExtra: splitKeys(el, elKeys(['kind', 'fontSize', 'align', 'bold'])),
         };
       }
       return {
@@ -222,7 +263,8 @@ function parseNode(raw: unknown): AnyNode {
         title: el.kind === 'rectangle' ? asString(el.title, '') : '',
         text: asString(raw.text, ''),
         ...style(RECTANGLE_DEFAULTS),
-        elExtra: splitKeys(el, ['kind', 'title', 'fontSize', 'align', 'bold']),
+        ...plan,
+        elExtra: splitKeys(el, elKeys(['kind', 'title', 'fontSize', 'align', 'bold'])),
       };
     }
     case 'file': {
@@ -233,12 +275,13 @@ function parseNode(raw: unknown): AnyNode {
         file: raw.file,
         ...(typeof raw.subpath === 'string' ? { subpath: raw.subpath } : {}),
         ...style(FILE_DEFAULTS),
-        elExtra: splitKeys(el, ['fontSize', 'align', 'bold']),
+        ...plan,
+        elExtra: splitKeys(el, elKeys(['fontSize', 'align', 'bold'])),
       };
     }
     case 'link': {
       if (typeof raw.url !== 'string') return { kind: 'unsupported', id: raw.id, raw };
-      return { kind: 'link', ...geometry(LINK_DEFAULTS), url: raw.url, elExtra: splitKeys(el, []) };
+      return { kind: 'link', ...geometry(LINK_DEFAULTS), url: raw.url, ...plan, elExtra: splitKeys(el, elKeys([])) };
     }
     default:
       return { kind: 'unsupported', id: raw.id, raw };
@@ -267,6 +310,21 @@ function parseEdge(raw: unknown): BoardEdge | UnsupportedEdge {
   };
 }
 
+/** Display names of the plan types, also the name of a plan that has none. */
+export const PLAN_NAMES: Record<PlanType, string> = { board: 'Board', timeline: 'Timeline' };
+
+function parsePlan(raw: unknown): Plan | undefined {
+  if (!isObject(raw) || typeof raw.id !== 'string' || (raw.type !== 'board' && raw.type !== 'timeline')) return undefined;
+  const items = Array.isArray(raw.items) ? [...new Set(raw.items.filter((i): i is string => typeof i === 'string'))] : [];
+  return {
+    id: raw.id,
+    type: raw.type,
+    name: asString(raw.name, PLAN_NAMES[raw.type]),
+    items,
+    extra: splitKeys(raw, ['id', 'type', 'name', 'items']),
+  };
+}
+
 /** Parse the text of a `.canvas` file. Never throws. */
 export function parse(text: string): ParseResult {
   if (text.trim() === '') return { ok: true, doc: emptyDoc(), empty: true };
@@ -279,7 +337,19 @@ export function parse(text: string): ParseResult {
   if (!isObject(value)) return { ok: false, error: 'The top-level value must be a JSON object.' };
   const nodes = Array.isArray(value.nodes) ? value.nodes.map(parseNode) : [];
   const edges = Array.isArray(value.edges) ? value.edges.map(parseEdge) : [];
-  return { ok: true, doc: { nodes, edges, extra: splitKeys(value, ['nodes', 'edges']) }, empty: false };
+  // A `konekton` or `konekton.plans` of the wrong shape stays in the extra keys, so a save does not lose it.
+  const own = isObject(value.konekton) ? value.konekton : {};
+  const rawPlans: Json[] = Array.isArray(own.plans) ? own.plans : [];
+  const plans: Plan[] = [];
+  const otherPlans: Json[] = [];
+  for (const raw of rawPlans) {
+    const plan = parsePlan(raw);
+    if (plan) plans.push(plan);
+    else otherPlans.push(raw);
+  }
+  const konektonExtra = splitKeys(own, Array.isArray(own.plans) ? ['plans'] : []);
+  const extra = splitKeys(value, ['nodes', 'edges', ...(isObject(value.konekton) ? ['konekton'] : [])]);
+  return { ok: true, doc: { nodes, edges, plans, otherPlans, konektonExtra, extra }, empty: false };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -287,8 +357,26 @@ export function parse(text: string): ParseResult {
 
 const round = (n: number): number => Math.round(n);
 
+function without(extra: Extra, key: string): Extra {
+  const out: Extra = { ...extra };
+  delete out[key];
+  return out;
+}
+
 function withExtra(known: Record<string, Json>, extra: Extra): Record<string, Json> {
   return { ...known, ...extra };
+}
+
+function planFields(n: NodeBase): Record<string, Json> {
+  return { ...(n.status !== undefined ? { status: n.status } : {}), ...(n.date !== undefined ? { date: n.date } : {}) };
+}
+
+/** `elExtra` without an invalid `status` or `date` that a value set since the parse replaces. */
+function nodeElExtra(n: NodeBase): Extra {
+  const out: Extra = { ...n.elExtra };
+  if (n.status !== undefined) delete out.status;
+  if (n.date !== undefined) delete out.date;
+  return out;
 }
 
 function styleFields(n: TextStyle): Record<string, Json> {
@@ -313,7 +401,7 @@ function nodeToJson(n: AnyNode): Record<string, Json> {
       return n.raw;
     case 'sticky':
       return withExtra(
-        { ...geometryFields(n, 'text'), text: n.text, konekton: withExtra({ kind: 'sticky', ...styleFields(n) }, n.elExtra) },
+        { ...geometryFields(n, 'text'), text: n.text, konekton: withExtra({ kind: 'sticky', ...styleFields(n), ...planFields(n) }, nodeElExtra(n)) },
         n.extra,
       );
     case 'rectangle':
@@ -321,7 +409,7 @@ function nodeToJson(n: AnyNode): Record<string, Json> {
         {
           ...geometryFields(n, 'text'),
           text: n.text,
-          konekton: withExtra({ kind: 'rectangle', title: n.title, ...styleFields(n) }, n.elExtra),
+          konekton: withExtra({ kind: 'rectangle', title: n.title, ...styleFields(n), ...planFields(n) }, nodeElExtra(n)),
         },
         n.extra,
       );
@@ -331,13 +419,14 @@ function nodeToJson(n: AnyNode): Record<string, Json> {
           ...geometryFields(n, 'file'),
           file: n.file,
           ...(n.subpath !== undefined ? { subpath: n.subpath } : {}),
-          konekton: withExtra(styleFields(n), n.elExtra),
+          konekton: withExtra({ ...styleFields(n), ...planFields(n) }, nodeElExtra(n)),
         },
         n.extra,
       );
     case 'link': {
       const base = { ...geometryFields(n, 'link'), url: n.url };
-      const el = Object.keys(n.elExtra).length > 0 ? { konekton: n.elExtra } : {};
+      const own = withExtra(planFields(n), nodeElExtra(n));
+      const el = Object.keys(own).length > 0 ? { konekton: own } : {};
       return withExtra({ ...base, ...el }, n.extra);
     }
   }
@@ -362,8 +451,18 @@ function edgeToJson(e: BoardEdge | UnsupportedEdge): Record<string, Json> {
   );
 }
 
+function planToJson(p: Plan): Record<string, Json> {
+  return withExtra({ id: p.id, type: p.type, name: p.name, items: p.items }, p.extra);
+}
+
 export function serialize(doc: CanvasDoc): string {
-  const json = { nodes: doc.nodes.map(nodeToJson), edges: doc.edges.map(edgeToJson), ...doc.extra };
+  const plans = [...doc.plans.map(planToJson), ...doc.otherPlans];
+  const hasOwn = plans.length > 0 || Object.keys(doc.konektonExtra).length > 0;
+  // Real plans replace a `plans` value of the wrong shape, and our `konekton` object replaces one in `extra`.
+  const konektonExtra = plans.length > 0 ? without(doc.konektonExtra, 'plans') : doc.konektonExtra;
+  const own = hasOwn ? { konekton: withExtra(plans.length > 0 ? { version: 1, plans } : {}, konektonExtra) } : {};
+  const extra = hasOwn ? without(doc.extra, 'konekton') : doc.extra;
+  const json = { nodes: doc.nodes.map(nodeToJson), edges: doc.edges.map(edgeToJson), ...own, ...extra };
   return JSON.stringify(json, null, 2) + '\n';
 }
 
