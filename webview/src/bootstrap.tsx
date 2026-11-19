@@ -6,6 +6,7 @@ import './styles.css';
 import { App } from './App';
 import { ALL_FEATURES, loadViewState, setHost, type Host, type HostFeatures } from './host';
 import { createBoardStore, type BoardStore } from './store';
+import { TodoApp } from './todo/TodoApp';
 import { BoardContext } from './useBoard';
 
 export type { HostFeatures } from './host';
@@ -19,6 +20,22 @@ export function bootstrap(host: Host, root: HTMLElement, features: HostFeatures 
     <StrictMode>
       <BoardContext.Provider value={store}>
         <App />
+      </BoardContext.Provider>
+    </StrictMode>,
+  );
+  host.post({ type: 'ready' });
+  return store;
+}
+
+/** Start the full todo editor inside `root`: one todo file, not a board. */
+export function bootstrapTodo(host: Host, root: HTMLElement): BoardStore {
+  setHost(host);
+  const store = createBoardStore((m) => host.post(m));
+  host.onMessage((m) => store.getState().handleMessage(m));
+  createRoot(root).render(
+    <StrictMode>
+      <BoardContext.Provider value={store}>
+        <TodoApp />
       </BoardContext.Provider>
     </StrictMode>,
   );

@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { boardNodes, serialize } from '../../src/shared/canvasFormat';
 import type { ExtensionMessage } from '../../src/shared/protocol';
 import { createBoardStore } from '../../webview/src/store';
-import { NO_FILE_REFERENCES, WebHost } from '../../web/src/host/WebHost';
-import { FakeDialogs, FakeEnv, FakeSettings, FakeStorage, FakeViewState, tick } from './fakes/webPorts';
+import { WebHost } from '../../web/src/host/WebHost';
+import { FakeDialogs, FakeEnv, FakeFiles, FakeSettings, FakeStorage, FakeViewState, tick } from './fakes/webPorts';
 
 const sample = readFileSync(join(__dirname, '..', 'fixtures', 'sample.canvas'), 'utf8');
 const NAME = 'sample.canvas';
@@ -13,7 +13,7 @@ const NAME = 'sample.canvas';
 function setup() {
   const storage = new FakeStorage();
   const etag = storage.put(NAME, sample);
-  const ports = { storage, env: new FakeEnv(), dialogs: new FakeDialogs(), settings: new FakeSettings(), viewState: new FakeViewState() };
+  const ports = { storage, files: new FakeFiles(), env: new FakeEnv(), dialogs: new FakeDialogs(), settings: new FakeSettings(), viewState: new FakeViewState() };
   const host = new WebHost(ports, NAME, { text: sample, etag }, { closeTextFields: async () => {}, renamed: () => {}, gone: () => {} });
   const received: ExtensionMessage[] = [];
   host.onMessage((m) => received.push(m));
@@ -107,19 +107,93 @@ describe('WebHost', () => {
     expect(env.raw).toEqual([NAME]);
   });
 
-  it('has no file references', async () => {
-    const { host, received } = setup();
-    host.post({ type: 'pickFile', requestId: 1 });
-    host.post({ type: 'resolveDroppedFiles', requestId: 2, uris: ['file:///x'] });
-    host.post({ type: 'saveFile', path: 'a.md', text: 'x', baseText: '' });
-    host.post({ type: 'watchFiles', paths: ['a.md'] });
-    host.post({ type: 'openFile', path: 'a.md' });
-    await tick();
-    expect(received).toEqual([
-      { type: 'pickFileResult', requestId: 1 },
-      { type: 'droppedFilesResult', requestId: 2, paths: [] },
-      { type: 'fileSaveResult', path: 'a.md', ok: false, error: NO_FILE_REFERENCES },
-    ]);
+  describe('file references', () => {
+    it('sends the content of watched files, and again when they change', async () => {
+      const { host, received, files } = setup();
+      files.disk.set('a.md', 'A');
+      host.post({ type: 'watchFiles', paths: ['a.md', 'gone.md'] });
+      await tick();
+      expect(received).toEqual([
+        { type: 'fileContent', path: 'a.md', status: 'ok', text: 'A' },
+        { type: 'fileContent', path: 'gone.md', status: 'missing' },
+      ]);
+      received.length = 0;
+      files.change('a.md', 'B');
+      files.change('other.md', 'x');
+      await tick();
+      expect(received).toEqual([{ type: 'fileContent', path: 'a.md', status: 'ok', text: 'B' }]);
+      host.post({ type: 'watchFiles', paths: [] });
+      received.length = 0;
+      files.change('a.md', 'C');
+      await tick();
+      expect(received).toEqual([]);
+    });
+
+    it('saves against the base text and reports conflicts', async () => {
+      const { host, received, files } = setup();
+      files.disk.set('a.md', 'A');
+      host.post({ type: 'watchFiles', paths: ['a.md'] });
+      host.post({ type: 'saveFile', path: 'a.md', text: 'B', baseText: 'A' });
+      await tick();
+      expect(files.disk.get('a.md')).toBe('B');
+      expect(received).toContainEqual({ type: 'fileSaveResult', path: 'a.md', ok: true });
+      received.length = 0;
+      host.post({ type: 'saveFile', path: 'a.md', text: 'C', baseText: 'A' });
+      await tick();
+      expect(received).toEqual([{ type: 'fileSaveResult', path: 'a.md', ok: false, conflict: true }]);
+      host.post({ type: 'saveFile', path: 'a.md', text: 'C', baseText: 'A', force: true });
+      await tick();
+      expect(files.disk.get('a.md')).toBe('C');
+    });
+
+    it('picks a file from the listed paths, asking again for an unknown one', async () => {
+      const { host, received, files, dialogs } = setup();
+      files.disk.set('notes/a.md', '');
+      files.disk.set('b.todo.md', '');
+      dialogs.promptAnswers = ['nope.md', ' notes/a.md '];
+      host.post({ type: 'pickFile', requestId: 1 });
+      await tick();
+      expect(dialogs.prompts[0].message).toContain('b.todo.md\nnotes/a.md');
+      expect(dialogs.alerts).toEqual(['No such file in the boards folder: nope.md']);
+      expect(received).toEqual([{ type: 'pickFileResult', requestId: 1, path: 'notes/a.md' }]);
+    });
+
+    it('creates a todo list, asking again when the name is taken', async () => {
+      const { host, received, files, dialogs } = setup();
+      files.disk.set('home.todo.md', '');
+      dialogs.promptAnswers = ['home', 'work.todo.md'];
+      host.post({ type: 'createTodoFile', requestId: 3 });
+      await tick();
+      expect(dialogs.alerts).toEqual(['home.todo.md already exists.']);
+      expect(received).toEqual([{ type: 'createTodoFileResult', requestId: 3, path: 'work.todo.md' }]);
+      expect(files.disk.get('work.todo.md')).toBe('- [ ] \n');
+      dialogs.promptAnswers = [undefined];
+      host.post({ type: 'createTodoFile', requestId: 4 });
+      await tick();
+      expect(received.at(-1)).toEqual({ type: 'createTodoFileResult', requestId: 4 });
+    });
+
+    it('answers create and save requests when the file store fails', async () => {
+      const { host, received, files, dialogs } = setup();
+      files.createTodo = () => Promise.reject(new Error('offline'));
+      files.save = () => Promise.reject(new Error('offline'));
+      dialogs.promptAnswers = ['home'];
+      host.post({ type: 'createTodoFile', requestId: 5 });
+      host.post({ type: 'saveFile', path: 'a.md', text: 'B', baseText: 'A' });
+      await tick();
+      expect(dialogs.alerts).toEqual(['Cannot create the todo list: offline']);
+      expect(received).toContainEqual({ type: 'createTodoFileResult', requestId: 5 });
+      expect(received).toContainEqual({ type: 'fileSaveResult', path: 'a.md', ok: false, conflict: false, error: 'offline' });
+    });
+
+    it('opens a file page and refuses dropped files', async () => {
+      const { host, received, env } = setup();
+      host.post({ type: 'openFile', path: 'a.md' });
+      host.post({ type: 'resolveDroppedFiles', requestId: 2, uris: ['file:///x'] });
+      await tick();
+      expect(env.files).toEqual(['a.md']);
+      expect(received).toEqual([{ type: 'droppedFilesResult', requestId: 2, paths: [] }]);
+    });
   });
 
   it('stores the grid setting and follows other tabs', async () => {
@@ -162,7 +236,7 @@ describe('WebHost', () => {
 
 describe('createBoardStore features', () => {
   it('keeps the host features', () => {
-    expect(createBoardStore(() => {}, 'chaos', { fileReferences: false }).getState().features.fileReferences).toBe(false);
+    expect(createBoardStore(() => {}, 'chaos', { fileReferences: false, todoFullscreen: false }).getState().features.fileReferences).toBe(false);
     expect(createBoardStore(() => {}).getState().features.fileReferences).toBe(true);
   });
 });

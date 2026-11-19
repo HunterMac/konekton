@@ -329,6 +329,23 @@ function Board() {
   }, [mode]);
   useEffect(() => () => window.clearTimeout(morphTimer.current), []);
 
+  // A card to show without a change of view ("Back to canvas" from the full todo editor): center it, same zoom.
+  const focusNode = useBoard((s) => s.focusNode);
+  useEffect(() => {
+    if (!focusNode) return;
+    const api = store.getState();
+    // A change of view has taken it already.
+    if (api.focusNode !== focusNode) return;
+    store.setState({ focusNode: null });
+    const target = boardNodes(api.doc).find((n) => n.id === focusNode);
+    const size = rootRef.current?.getBoundingClientRect();
+    if (api.mode !== 'chaos' || !target || !size) return;
+    const { zoom } = rf.getViewport();
+    void rf.setViewport({ x: size.width / 2 - (target.x + target.width / 2) * zoom, y: size.height / 2 - (target.y + target.height / 2) * zoom, zoom });
+    // Runs when a card is asked for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusNode]);
+
   const watchedPaths = useMemo(() => {
     const paths = new Set<string>();
     for (const n of boardNodes(doc)) if (n.kind === 'file' && n.file !== '') paths.add(n.file);
@@ -539,8 +556,17 @@ function Board() {
 
       const api = store.getState();
       const flow = rf.screenToFlowPosition(screen);
-      const side = handle.id as Side;
       const hit = hitTest(boardNodes(api.doc), flow);
+      // A ball at the end of a task row: the line starts at that task. Dropped on empty space it does nothing.
+      if (handle.id?.startsWith('task:')) {
+        const source = boardNodes(api.doc).find((n) => n.id === from.id);
+        if (hit && source && hit.id !== from.id) {
+          const offset = (handle.y + handle.height / 2) / source.height;
+          api.connectTask(from.id, handle.id.slice('task:'.length), offset, { nodeId: hit.id, anchor: nearestBorderAnchor(hit, flow, rf.getZoom()) });
+        }
+        return;
+      }
+      const side = handle.id as Side;
       if (hit) {
         if (hit.id === from.id) return;
         api.connect({ nodeId: from.id, anchor: { side, offset: 0.5 } }, { nodeId: hit.id, anchor: nearestBorderAnchor(hit, flow, rf.getZoom()) });
@@ -572,6 +598,10 @@ function Board() {
           const url = await api.promptUrl();
           if (url) api.createNode({ kind, center: at, url });
           else api.setTool('select');
+        } else if (kind === 'todo') {
+          const file = await api.createTodoFile();
+          if (file) api.createNode({ kind: 'file', center: at, file });
+          else api.setTool('select');
         }
       })();
       return true;
@@ -586,6 +616,7 @@ function Board() {
       if (placeWithTool(event)) return;
       api.setEditing(null);
       api.setLabelEditing(null);
+      api.setTodoPanelOwner(null);
     },
     [placeWithTool, store],
   );
@@ -662,6 +693,7 @@ function Board() {
         else if (api.contextMenu) api.setContextMenu(null);
         else if (api.chooser) api.setChooser(null);
         else if (api.editing) api.setEditing(null);
+        else if (api.todoPanelOwner) api.setTodoPanelOwner(null);
         else if (api.tool !== 'select') api.setTool('select');
         else if (api.mode !== 'chaos' && api.selNodes.length > 0) api.setSelection([], []);
         return;

@@ -2,9 +2,10 @@ import { stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
-import { API, API_PREFIX, EVENTS, MAX_BOARD_BYTES, type SaveRequest } from '../shared/api.ts';
+import { API, API_PREFIX, EVENTS, MAX_BOARD_BYTES, type FileSaveRequest, type SaveRequest } from '../shared/api.ts';
 import { isBoardName } from '../shared/boardNames.ts';
 import { BoardError, BoardFiles, seedBoards } from './boardFiles.ts';
+import { RefFiles } from './refFiles.ts';
 import { checkRequest } from './requestGuard.ts';
 
 export interface BoardsPluginOptions {
@@ -25,8 +26,8 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-/** Read a JSON `{ text }` body. Stops reading at the size limit. */
-function readSaveBody(req: IncomingMessage): Promise<SaveRequest> {
+/** Read a JSON body. Stops reading at the size limit. */
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -52,20 +53,56 @@ function readSaveBody(req: IncomingMessage): Promise<SaveRequest> {
       done = true;
       try {
         const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        const text = typeof body === 'object' && body !== null ? (body as { text?: unknown }).text : undefined;
-        if (typeof text !== 'string') throw new Error('no text');
-        resolve({ text });
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new Error('not an object');
+        resolve(body as Record<string, unknown>);
       } catch {
-        reject(new BoardError(400, 'Body must be JSON with a "text" string'));
+        reject(new BoardError(400, 'Body must be a JSON object'));
       }
     });
   });
 }
 
-async function route(files: BoardFiles, req: IncomingMessage, res: ServerResponse): Promise<void> {
+/** Read a JSON `{ text }` body. */
+async function readSaveBody(req: IncomingMessage): Promise<SaveRequest> {
+  const body = await readJsonBody(req);
+  if (typeof body.text !== 'string') throw new BoardError(400, 'Body must be JSON with a "text" string');
+  return { text: body.text };
+}
+
+/** Read a JSON `{ text, baseText, force? }` body. */
+async function readFileSaveBody(req: IncomingMessage): Promise<FileSaveRequest> {
+  const body = await readJsonBody(req);
+  if (typeof body.text !== 'string' || typeof body.baseText !== 'string') throw new BoardError(400, 'Body must be JSON with "text" and "baseText" strings');
+  return { text: body.text, baseText: body.baseText, force: body.force === true };
+}
+
+async function route(files: BoardFiles, refs: RefFiles, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const name = url.searchParams.get('name') ?? '';
   const method = (req.method ?? 'GET').toUpperCase();
+
+  if (method === 'GET' && url.pathname === API.files) {
+    sendJson(res, 200, { paths: await refs.list() });
+    return;
+  }
+  if (url.pathname === API.file) {
+    const filePath = url.searchParams.get('path') ?? '';
+    if (method === 'GET') {
+      sendJson(res, 200, await refs.read(filePath));
+      return;
+    }
+    if (method === 'PUT') {
+      const body = await readFileSaveBody(req);
+      await refs.save(filePath, body.text, body.baseText, body.force === true);
+      sendJson(res, 200, {});
+      return;
+    }
+  }
+  if (method === 'PUT' && url.pathname === API.todoFile) {
+    await readSaveBody(req);
+    sendJson(res, 201, { path: await refs.createTodo(name) });
+    return;
+  }
 
   if (method === 'GET' && url.pathname === API.boards) {
     sendJson(res, 200, { boards: await files.list() });
@@ -98,7 +135,7 @@ async function route(files: BoardFiles, req: IncomingMessage, res: ServerRespons
   throw new BoardError(404, 'Not found');
 }
 
-function watchBoards(server: ViteDevServer, files: BoardFiles, boardsDir: string): void {
+function watchBoards(server: ViteDevServer, files: BoardFiles, refs: RefFiles, boardsDir: string): void {
   const nameOf = (file: string): string | undefined => {
     const full = path.resolve(file);
     if (path.dirname(full) !== boardsDir) return undefined;
@@ -118,6 +155,13 @@ function watchBoards(server: ViteDevServer, files: BoardFiles, boardsDir: string
   };
 
   server.watcher.add(boardsDir);
+  // Referenced text files: the page reads them again itself, so one event per change is enough.
+  for (const event of ['change', 'add', 'unlink'] as const) {
+    server.watcher.on(event, (file) => {
+      const filePath = refs.pathOf(file);
+      if (filePath !== undefined) server.ws.send(EVENTS.fileChanged, { path: filePath });
+    });
+  }
   server.watcher.on('change', (file) => {
     const name = nameOf(file);
     if (name) void sendChanged(name);
@@ -158,6 +202,7 @@ export function boardsPlugin(options: BoardsPluginOptions): Plugin {
     async configureServer(server) {
       await seedBoards(boardsDir, options.fixturesDir);
       const files = new BoardFiles(boardsDir);
+      const refs = new RefFiles(boardsDir);
 
       // Added here, not in a returned function: it runs before Vite's own middlewares and its HTML fallback.
       server.middlewares.use((req, res, next) => {
@@ -170,7 +215,7 @@ export function boardsPlugin(options: BoardsPluginOptions): Plugin {
           sendJson(res, blocked.status, { error: blocked.error });
           return;
         }
-        route(files, req, res).catch((err: unknown) => {
+        route(files, refs, req, res).catch((err: unknown) => {
           if (err instanceof BoardError) {
             if (err.status === 413) {
               // The rest of the body is not read: close the connection after the answer.
@@ -185,7 +230,7 @@ export function boardsPlugin(options: BoardsPluginOptions): Plugin {
         });
       });
 
-      watchBoards(server, files, boardsDir);
+      watchBoards(server, files, refs, boardsDir);
       server.config.logger.info(`  Konekton boards: ${boardsDir}`);
     },
   };

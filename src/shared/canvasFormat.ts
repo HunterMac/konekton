@@ -83,10 +83,15 @@ export interface RectangleNode extends NodeBase, TextStyle {
   text: string;
 }
 
+/** How a file reference shows its file: as a todo list, as lanes of that list, or as raw text. */
+export type FileView = 'todo' | 'board' | 'timeline' | 'text';
+
 export interface FileNode extends NodeBase, TextStyle {
   kind: 'file';
   file: string;
   subpath?: string;
+  /** Unset: the default for the file (todo mode for `*.todo.md`). */
+  view?: FileView;
 }
 
 export interface LinkNode extends NodeBase {
@@ -114,6 +119,11 @@ export interface BoardEdge {
   toSide: Side;
   toEnd: EndShape;
   toOffset: number;
+  /**
+   * Id of the task (`id:` in the comment of its line in a todo file) the line starts at. `fromNode` is the todo
+   * file object; `fromOffset` is where the task was last seen (the line follows the task row while it is shown).
+   */
+  fromTask?: string;
   color?: string;
   label: string;
   extra: Extra;
@@ -269,6 +279,7 @@ function parseNode(raw: unknown): AnyNode {
     }
     case 'file': {
       if (typeof raw.file !== 'string') return { kind: 'unsupported', id: raw.id, raw };
+      const view = el.view === 'todo' || el.view === 'board' || el.view === 'timeline' || el.view === 'text' ? el.view : undefined;
       return {
         kind: 'file',
         ...geometry(FILE_DEFAULTS),
@@ -276,7 +287,8 @@ function parseNode(raw: unknown): AnyNode {
         ...(typeof raw.subpath === 'string' ? { subpath: raw.subpath } : {}),
         ...style(FILE_DEFAULTS),
         ...plan,
-        elExtra: splitKeys(el, elKeys(['fontSize', 'align', 'bold'])),
+        ...(view !== undefined ? { view } : {}),
+        elExtra: splitKeys(el, elKeys(['fontSize', 'align', 'bold', ...(view !== undefined ? ['view'] : [])])),
       };
     }
     case 'link': {
@@ -303,10 +315,11 @@ function parseEdge(raw: unknown): BoardEdge | UnsupportedEdge {
     toSide: asSide(raw.toSide, 'left'),
     toEnd: asEnd(raw.toEnd, 'arrow'),
     toOffset: clamp01(asNumber(el.toOffset, 0.5)),
+    ...(typeof el.fromTask === 'string' && el.fromTask !== '' ? { fromTask: el.fromTask } : {}),
     ...(typeof raw.color === 'string' ? { color: raw.color } : {}),
     label: asString(raw.label, ''),
     extra: splitKeys(raw, EDGE_KEYS),
-    elExtra: splitKeys(el, ['fromOffset', 'toOffset']),
+    elExtra: splitKeys(el, ['fromOffset', 'toOffset', 'fromTask']),
   };
 }
 
@@ -379,6 +392,13 @@ function nodeElExtra(n: NodeBase): Extra {
   return out;
 }
 
+/** `nodeElExtra`, also without an invalid `view` that a view set since the parse replaces. */
+function fileElExtra(n: FileNode): Extra {
+  const out = nodeElExtra(n);
+  if (n.view !== undefined) delete out.view;
+  return out;
+}
+
 function styleFields(n: TextStyle): Record<string, Json> {
   return { fontSize: n.fontSize, align: n.align, bold: n.bold };
 }
@@ -419,7 +439,7 @@ function nodeToJson(n: AnyNode): Record<string, Json> {
           ...geometryFields(n, 'file'),
           file: n.file,
           ...(n.subpath !== undefined ? { subpath: n.subpath } : {}),
-          konekton: withExtra({ ...styleFields(n), ...planFields(n) }, nodeElExtra(n)),
+          konekton: withExtra({ ...styleFields(n), ...planFields(n), ...(n.view !== undefined ? { view: n.view } : {}) }, fileElExtra(n)),
         },
         n.extra,
       );
@@ -445,7 +465,7 @@ function edgeToJson(e: BoardEdge | UnsupportedEdge): Record<string, Json> {
       toEnd: e.toEnd,
       ...(e.color !== undefined ? { color: e.color } : {}),
       ...(e.label !== '' ? { label: e.label } : {}),
-      konekton: withExtra({ fromOffset: e.fromOffset, toOffset: e.toOffset }, e.elExtra),
+      konekton: withExtra({ fromOffset: e.fromOffset, toOffset: e.toOffset, ...(e.fromTask !== undefined ? { fromTask: e.fromTask } : {}) }, e.elExtra),
     },
     e.extra,
   );

@@ -10,6 +10,7 @@ const TOOLS: { tool: Tool; title: string; icon: ReactNode }[] = [
   { tool: 'rectangle', title: 'Rectangle', icon: <RectangleIcon /> },
   { tool: 'file', title: 'File reference (or drag files from the Explorer while holding Shift)', icon: <Codicon name="file" /> },
   { tool: 'link', title: 'Link', icon: <Codicon name="link" /> },
+  { tool: 'todo', title: 'New todo list (creates a .todo.md file)', icon: <Codicon name="checklist" /> },
 ];
 
 /** Vertical tool palette. Pick a tool, then click the board. */
@@ -17,7 +18,7 @@ export function LeftToolbar() {
   const store = useBoardStore();
   const tool = useBoard((s) => s.tool);
   const fileReferences = useBoard((s) => s.features.fileReferences);
-  const tools = fileReferences ? TOOLS : TOOLS.filter((t) => t.tool !== 'file');
+  const tools = fileReferences ? TOOLS : TOOLS.filter((t) => t.tool !== 'file' && t.tool !== 'todo');
   return (
     <Panel position="center-left" className="eb-ui eb-left-toolbar">
       {tools.map((t) => (

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Todo lists: a file reference to a `*.todo.md` file shows it as a todo list, with a **Todo / Text** switch. Tasks are GitHub checklist items with visible `#tag @person !date ~estimate` tokens and hidden data in an HTML comment (see `goals/todo/TODO-FORMAT.md`). Details open per task; subtasks, repeats, links between tasks, keyboard editing, drag and drop and undo are supported. New lists from the checklist tool or the line chooser.
+- Todo lists have a **Board** mode: the list's top-level tasks as cards in Todo / In progress / Done lanes, per object, separate from the board-wide views.
+- Todo lists have a **Timeline** mode, after Board: top-level tasks as cards under the Days / Weeks / Months segment of their due date, with an Unscheduled area. Drag a card to change its due date.
+- Full todo editor: **Open fullscreen** on a todo object opens the file as an editor tab of its own (**Konekton Todo**, also under Open With… for any `*.todo.md`). Todo and Board mode with a fixed text size that follows the editor width, and a page that scrolls. **Canvas** goes back to the canvas that has a card for the file, with the card selected and centered.
+- Web version start page: tabs **All / Canvas / Todo** filter the list; todo files (`*.todo.md`) are listed too, and a click opens the full todo editor. **Open fullscreen** on a todo card opens it in a new tab.
+- Web version: file references and todo lists now work, on `.md`, `.txt` and `.json` files inside the boards folder (read, edit, save with conflict check, live updates, file picker, open the text in a new tab).
+
 - Web version for testing: `npm run dev` runs the board as a standalone web app on `localhost`, with the boards as `.canvas` files in `boards/`.
 - Three views in one file: **Chaos** (the free board), **Board** (Todo / In progress / Done lanes) and **Timeline** (a date arrow with Days, Weeks and Months), with a short morph animation between them.
 - Add items to the Board and the Timeline from the Chaos right-click menu. Status and date are shared by all views and change by dragging cards or from the menu.

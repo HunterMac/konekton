@@ -1,17 +1,21 @@
 import { isHttpUrl, type ExtensionMessage, type WebviewMessage } from '../../../src/shared/protocol';
 import type { Host } from '../../../webview/src/host';
-import type { BoardStorage, Dialogs, Env, LoadedBoard, Settings, ViewStateStore } from '../ports/types';
+import type { FileResponse } from '../../shared/api';
+import { todoFileName } from '../../shared/fileRules';
+import type { BoardStorage, Dialogs, Env, FileSaveResult, FileStore, LoadedBoard, Settings, ViewStateStore } from '../ports/types';
 import { WebDocument, type WebDocumentCallbacks } from './WebDocument';
 
 export interface WebPorts {
   storage: BoardStorage;
+  files: FileStore;
   env: Env;
   dialogs: Dialogs;
   settings: Settings;
   viewState: ViewStateStore;
 }
 
-export const NO_FILE_REFERENCES = 'File references are not available in the web version.';
+/** How many file paths the file prompt lists. */
+const PICK_LIST_MAX = 30;
 
 /**
  * The web app's side of the board protocol: answers the same messages as `BoardSession.handleMessage`
@@ -22,6 +26,10 @@ export class WebHost implements Host {
   private readonly listeners = new Set<(message: ExtensionMessage) => void>();
   private version = 0;
   private readonly disposers: (() => void)[] = [];
+  /** Files the board shows; their changes are sent as `fileContent`. */
+  private watched = new Set<string>();
+  /** Per file: number of the newest read, so an older answer that arrives late is dropped. */
+  private readonly reads = new Map<string, number>();
 
   constructor(
     private readonly ports: WebPorts,
@@ -37,7 +45,23 @@ export class WebHost implements Host {
         if (event.kind === 'changed' && event.name === this.doc.name) this.doc.changed(event.name, event.etag);
         else if (event.kind === 'removed' && event.name === this.doc.name) this.doc.removed(event.name);
       }),
+      ports.files.watch((path) => {
+        if (this.watched.has(path)) this.readFile(path);
+      }),
     );
+  }
+
+  /** Read a referenced file and send its content, like `ReferencedFiles.read` in the extension. */
+  private readFile(path: string): void {
+    const n = (this.reads.get(path) ?? 0) + 1;
+    this.reads.set(path, n);
+    void this.ports.files
+      .read(path)
+      .catch((): FileResponse => ({ status: 'missing' }))
+      .then((r) => {
+        if (this.reads.get(path) !== n) return;
+        this.send({ type: 'fileContent', path, status: r.status, ...(r.text !== undefined ? { text: r.text } : {}) });
+      });
   }
 
   /** Host → board messages are asynchronous, like `postMessage` in VS Code: no zustand `set` inside a `set`. */
@@ -99,23 +123,97 @@ export class WebHost implements Host {
       case 'reopenAsText':
         env.openRaw(this.doc.name);
         return;
-      case 'pickFile':
-        this.send({ type: 'pickFileResult', requestId: m.requestId });
+      case 'pickFile': {
+        const requestId = m.requestId;
+        void this.pickFile().then((path) => this.send({ type: 'pickFileResult', requestId, ...(path !== undefined ? { path } : {}) }));
         return;
+      }
+      case 'createTodoFile': {
+        const requestId = m.requestId;
+        void this.createTodoFile().then((path) => this.send({ type: 'createTodoFileResult', requestId, ...(path !== undefined ? { path } : {}) }));
+        return;
+      }
       case 'resolveDroppedFiles':
+        // A browser drop carries no paths inside the boards folder.
         this.send({ type: 'droppedFilesResult', requestId: m.requestId, paths: [] });
         return;
-      case 'saveFile':
-        this.send({ type: 'fileSaveResult', path: m.path, ok: false, error: NO_FILE_REFERENCES });
+      case 'saveFile': {
+        const path = m.path;
+        void this.ports.files
+          .save(path, m.text, m.baseText, m.force === true)
+          // Always answer: the board sends the next save of this file only after this result.
+          .catch((err: unknown): FileSaveResult => ({ ok: false, conflict: false, error: err instanceof Error ? err.message : String(err) }))
+          .then((r) => {
+            this.send(r.ok ? { type: 'fileSaveResult', path, ok: true } : { type: 'fileSaveResult', path, ok: false, conflict: r.conflict, ...(r.error !== undefined ? { error: r.error } : {}) });
+            if (r.ok && this.watched.has(path)) this.readFile(path);
+          });
         return;
+      }
       case 'watchFiles':
+        this.watched = new Set(m.paths);
+        for (const path of m.paths) this.readFile(path);
+        return;
       case 'openFile':
+        env.openFile(m.path);
+        return;
+      case 'openTodoFullscreen':
+        env.openTodo(m.path, this.doc.name);
+        return;
+      case 'backToCanvas':
+        // Only the full todo editor sends this.
         return;
       default: {
         // A new message type fails the typecheck here until the web host handles it.
         const unhandled: never = m;
         return unhandled;
       }
+    }
+  }
+
+  /** Ask for a path in the boards folder, listing the files there. Asks again until it is a listed file. */
+  private async pickFile(): Promise<string | undefined> {
+    let paths: string[];
+    try {
+      paths = await this.ports.files.list();
+    } catch (err) {
+      this.ports.dialogs.alert(`Cannot list the files: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    if (paths.length === 0) {
+      this.ports.dialogs.alert('There are no .md, .txt or .json files in the boards folder.');
+      return undefined;
+    }
+    const shown = paths.slice(0, PICK_LIST_MAX).join('\n');
+    const more = paths.length > PICK_LIST_MAX ? `\n… and ${paths.length - PICK_LIST_MAX} more` : '';
+    let value: string | undefined = paths[0];
+    for (;;) {
+      const answer = this.ports.dialogs.prompt(`File to add (path in the boards folder):\n${shown}${more}`, value);
+      if (answer === undefined) return undefined;
+      const path = answer.trim();
+      if (paths.includes(path)) return path;
+      this.ports.dialogs.alert(`No such file in the boards folder: ${path}`);
+      value = answer;
+    }
+  }
+
+  /** Same texts as the extension: ask for a name until `<name>.todo.md` could be created, or the prompt is cancelled. */
+  private async createTodoFile(): Promise<string | undefined> {
+    let value = '';
+    for (;;) {
+      const answer = this.ports.dialogs.prompt('Name of the todo list', value);
+      if (answer === undefined) return undefined;
+      let r: Awaited<ReturnType<FileStore['createTodo']>>;
+      try {
+        r = await this.ports.files.createTodo(answer);
+      } catch (err) {
+        // Always answer the request: the board waits for it.
+        this.ports.dialogs.alert(`Cannot create the todo list: ${err instanceof Error ? err.message : String(err)}`);
+        return undefined;
+      }
+      if (r !== 'exists' && 'path' in r) return r.path;
+      const name = todoFileName(answer);
+      this.ports.dialogs.alert(r === 'exists' ? `${'name' in name ? name.name : answer} already exists.` : r.error);
+      value = answer;
     }
   }
 

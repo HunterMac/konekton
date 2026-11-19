@@ -29,6 +29,19 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "konekton.todo",
+        "displayName": "Konekton Todo",
+        "selector": [
+          {
+            "filenamePattern": "*.todo.md"
+          },
+          {
+            "filenamePattern": "todo.md"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "configuration": {

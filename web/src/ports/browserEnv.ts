@@ -1,4 +1,5 @@
 import { isHttpUrl } from '../../../src/shared/protocol';
+import { todoHref } from '../routes';
 import type { Env } from './types';
 
 /** Clipboard and new tabs. The clipboard needs a secure context: `http://localhost` is one, a LAN address is not. */
@@ -23,6 +24,12 @@ export function createBrowserEnv(): Env {
     },
     openRaw(name) {
       window.open(`/?board=${encodeURIComponent(name)}&view=raw`, '_blank', 'noopener');
+    },
+    openFile(path) {
+      window.open(`/?file=${encodeURIComponent(path)}`, '_blank', 'noopener');
+    },
+    openTodo(path, from) {
+      window.open(todoHref(path, from), '_blank');
     },
   };
 }

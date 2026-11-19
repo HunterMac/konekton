@@ -6,6 +6,7 @@ import { useBoard, useBoardStore } from '../useBoard';
 import type { EndpointDrag } from '../store';
 import { EdgeLabel } from './EdgeLabel';
 import { LineToolbar } from '../ui/LineToolbar';
+import { useTaskAnchor } from './taskAnchors';
 
 export interface CurvedEdgeData extends Record<string, unknown> {
   model: BoardEdge;
@@ -28,7 +29,9 @@ export function CurvedEdge({ id, data, selected }: EdgeProps<CurvedRFEdge>) {
   const drag = useBoard((s) => (s.endpointDrag?.edgeId === id ? s.endpointDrag : null));
   const showToolbar = useBoard((s) => s.selEdges.length === 1 && s.selEdges[0] === id && s.selNodes.length === 0 && s.labelEditing !== id);
 
-  let start = anchorPoint(fromRect, model.fromSide, model.fromOffset);
+  // A line that starts at a task follows the row of the task.
+  const taskAt = useTaskAnchor(model.fromNode, model.fromSide === 'right' ? model.fromTask : undefined);
+  let start = anchorPoint(fromRect, model.fromSide, taskAt ?? model.fromOffset);
   let end = anchorPoint(toRect, model.toSide, model.toOffset);
   let fromSide = model.fromSide;
   let toSide = model.toSide;

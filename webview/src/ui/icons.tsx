@@ -68,4 +68,11 @@ export const ResizeIcon = (p: IconProps) => (
   </svg>
 );
 
+/** Two chevrons, `>>`: a task in progress. */
+export const ProgressIcon = (p: IconProps) => (
+  <svg {...base} strokeWidth={2} style={{ stroke: '#fff', flex: 'none' }} {...p}>
+    <path d="M3.5 4L7.5 8l-4 4M8.5 4l4 4-4 4" />
+  </svg>
+);
+
 export const Codicon = ({ name, className = '' }: { name: string; className?: string }) => <span className={`codicon codicon-${name} ${className}`} aria-hidden="true" />;

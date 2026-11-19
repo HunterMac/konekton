@@ -6,8 +6,8 @@ function nonce(): string {
   return Buffer.from(bytes).toString('base64');
 }
 
-/** HTML for the board webview. Strict CSP, no remote resources. */
-export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+/** HTML for the board webview, or with `view` "todo" for the full todo editor. Strict CSP, no remote resources. */
+export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri, view: 'board' | 'todo' = 'board'): string {
   const dist = vscode.Uri.joinPath(extensionUri, 'dist', 'webview');
   const script = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'assets', 'main.js'));
   const style = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'assets', 'main.css'));
@@ -28,7 +28,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   <link rel="stylesheet" href="${style}">
   <title>Konekton</title>
 </head>
-<body>
+<body data-view="${view}">
   <div id="root"></div>
   <script nonce="${n}" type="module" src="${script}"></script>
 </body>

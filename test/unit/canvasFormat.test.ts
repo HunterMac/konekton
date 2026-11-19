@@ -74,6 +74,20 @@ describe('canvasFormat', () => {
     expect(e2.toEnd).toBe('none');
   });
 
+  it('keeps the task a line starts at and writes it into the konekton block', () => {
+    const doc = parseOk(fixture('sample.canvas'));
+    const edge = doc.edges[0];
+    if (!isBoardEdge(edge)) throw new Error('expected board edge');
+    const text = serialize({ ...doc, edges: [{ ...edge, fromTask: 'k3f9' }, ...doc.edges.slice(1)] });
+    expect(JSON.parse(text).edges[0].konekton.fromTask).toBe('k3f9');
+    const again = parseOk(text).edges[0];
+    if (!isBoardEdge(again)) throw new Error('expected board edge');
+    expect(again.fromTask).toBe('k3f9');
+    expect(serialize(parseOk(text))).toBe(text);
+    // Without a task the file stays as it was.
+    expect(serialize(doc)).not.toContain('fromTask');
+  });
+
   it('rounds geometry to integers on save', () => {
     const doc = parseOk(fixture('sample.canvas'));
     const n = doc.nodes[0];
@@ -153,6 +167,34 @@ describe('canvasFormat', () => {
       expect(n1).toMatchObject({ status: 'inProgress', date: '2026-11-03' });
       expect(n2).toMatchObject({ status: 'done' });
       expect(n2.date).toBeUndefined();
+    });
+
+    it('reads and writes the view of a file reference, and keeps an invalid one verbatim', () => {
+      const text = JSON.stringify({
+        nodes: [
+          { id: 'a', type: 'file', x: 0, y: 0, width: 320, height: 240, file: 'home.todo.md', konekton: { fontSize: 14, align: 'left', bold: false, view: 'text' } },
+          { id: 'b', type: 'file', x: 0, y: 0, width: 320, height: 240, file: 'b.todo.md', konekton: { fontSize: 14, align: 'left', bold: false, view: 'grid' } },
+        ],
+        edges: [],
+      });
+      const doc = parseOk(text);
+      const [a, b] = boardNodes(doc);
+      expect(a).toMatchObject({ kind: 'file', view: 'text' });
+      expect(boardNodes(parseOk(text.replace('"text"}', '"board"}')))[0]).toMatchObject({ view: 'board' });
+      expect(boardNodes(parseOk(text.replace('"text"}', '"timeline"}')))[0]).toMatchObject({ view: 'timeline' });
+      expect(b).not.toHaveProperty('view');
+      expect(b.elExtra).toEqual({ view: 'grid' });
+      expect(JSON.parse(serialize(doc))).toEqual(JSON.parse(text));
+    });
+
+    it('writes a view set over an invalid one', () => {
+      const text = JSON.stringify({
+        nodes: [{ id: 'b', type: 'file', x: 0, y: 0, width: 320, height: 240, file: 'b.todo.md', konekton: { fontSize: 14, align: 'left', bold: false, view: 'grid' } }],
+        edges: [],
+      });
+      const doc = parseOk(text);
+      const out = serialize({ ...doc, nodes: doc.nodes.map((n) => (n.kind === 'file' ? { ...n, view: 'board' as const } : n)) });
+      expect(boardNodes(parseOk(out))[0]).toMatchObject({ view: 'board' });
     });
 
     it('writes no top-level konekton key for a file without plans', () => {

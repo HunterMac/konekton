@@ -3,11 +3,14 @@ import type { NodeInit, NodeKind } from '../store';
 import { useBoard, useBoardStore } from '../useBoard';
 import { Codicon, RectangleIcon, StickyIcon } from './icons';
 
-const CHOICES: { kind: NodeKind; label: string; icon: ReactNode }[] = [
+type Choice = NodeKind | 'todo';
+
+const CHOICES: { kind: Choice; label: string; icon: ReactNode }[] = [
   { kind: 'sticky', label: 'Sticky note', icon: <StickyIcon /> },
   { kind: 'rectangle', label: 'Rectangle', icon: <RectangleIcon /> },
   { kind: 'file', label: 'File reference', icon: <Codicon name="file" /> },
   { kind: 'link', label: 'Link', icon: <Codicon name="link" /> },
+  { kind: 'todo', label: 'Todo list', icon: <Codicon name="checklist" /> },
 ];
 
 /** Shown when a line is released on empty space: pick the object to create there and connect. */
@@ -16,14 +19,19 @@ export function NewObjectChooser({ origin }: { origin: { left: number; top: numb
   const chooser = useBoard((s) => s.chooser);
   const fileReferences = useBoard((s) => s.features.fileReferences);
   if (!chooser) return null;
-  const choices = fileReferences ? CHOICES : CHOICES.filter((c) => c.kind !== 'file');
+  const choices = fileReferences ? CHOICES : CHOICES.filter((c) => c.kind !== 'file' && c.kind !== 'todo');
 
   const close = () => store.getState().setChooser(null);
-  const choose = async (kind: NodeKind) => {
+  const choose = async (choice: Choice) => {
     const api = store.getState();
     api.setChooser(null);
+    const kind: NodeKind = choice === 'todo' ? 'file' : choice;
     const init: NodeInit = { kind, center: chooser.at };
-    if (kind === 'file') {
+    if (choice === 'todo') {
+      const path = await api.createTodoFile();
+      if (!path) return;
+      init.file = path;
+    } else if (kind === 'file') {
       const path = await api.pickFile();
       if (!path) return;
       init.file = path;

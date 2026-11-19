@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { PLAN_NAMES, STATUSES, isBoardNode, type PlanType } from '../../../src/shared/canvasFormat';
+import { isTodoPath } from '../../../src/shared/todoFormat';
 import { useBoard, useBoardStore } from '../useBoard';
 import { planOf } from '../plans';
 import type { Point } from '../geometry';
@@ -23,6 +24,7 @@ export function ContextMenu({ origin, viewCenter }: { origin: { left: number; to
   const mode = useBoard((s) => s.mode);
   const doc = useBoard((s) => s.doc);
   const fileReferences = useBoard((s) => s.features.fileReferences);
+  const todoFullscreen = useBoard((s) => s.features.todoFullscreen);
   // The status list is open for one menu at a time: a new menu starts closed.
   const [statusOpenFor, setStatusOpenFor] = useState<object | null>(null);
   if (!menu) return null;
@@ -58,7 +60,10 @@ export function ContextMenu({ origin, viewCenter }: { origin: { left: number; to
   } else if (target.kind === 'node') {
     const node = doc.nodes.find((n) => isBoardNode(n) && n.id === target.id);
     items.push({ label: 'Copy', icon: 'copy', run: copy }, { label: 'Paste', icon: 'clippy', run: () => void paste() }, { label: 'Duplicate', icon: 'files', run: () => api().duplicateSelection() });
-    if (node?.kind === 'file' && fileReferences) items.push({ label: 'Open in editor', icon: 'go-to-file', run: () => api().openFile(node.file) });
+    if (node?.kind === 'file' && fileReferences) {
+      if (todoFullscreen && isTodoPath(node.file)) items.push({ label: 'Open fullscreen', icon: 'screen-full', run: () => api().openTodoFullscreen(node.id) });
+      items.push({ label: 'Open in editor', icon: 'go-to-file', run: () => api().openFile(node.file) });
+    }
     if (node?.kind === 'link') {
       items.push(
         { label: 'Open link', icon: 'link', run: () => api().openUrl(node.url) },

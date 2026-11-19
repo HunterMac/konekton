@@ -186,6 +186,13 @@ body,
   background: #fafafa;
 }
 
+/* Todo files: file name and view switch never get smaller than their normal size on screen when
+   zoomed out (down to FAR_ZOOM, 0.4, where the summary takes over). Zoomed in they grow with the
+   board. --eb-zoom is set by ZoomControls. */
+.eb-file-header-fixed {
+  zoom: calc(1 / clamp(0.4, var(--eb-zoom, 1), 1));
+}
+
 .eb-file.missing .eb-file-header {
   background: #ececec;
 }
@@ -342,6 +349,34 @@ textarea.eb-file-text {
 .react-flow__handle.eb-ball:hover {
   background: var(--eb-accent);
   transform: translate(-50%, -50%) scale(1.3);
+}
+
+/* The ball at the end of a task row: a line can start at a single task. Shown while the row is hovered. */
+.react-flow__handle.eb-task-ball {
+  width: 11.5px;
+  height: 11.5px;
+  min-width: 0;
+  min-height: 0;
+  left: auto;
+  right: 3px;
+  top: calc(3px + 0.675em);
+  transform: translate(0, -50%);
+  background: #fff;
+  border: 1.5px solid var(--eb-accent);
+  border-radius: 50%;
+  opacity: 0;
+  cursor: crosshair;
+  transition: opacity 80ms;
+}
+
+.eb-todo-row:hover .eb-task-ball,
+.react-flow__handle.eb-task-ball.connectingfrom {
+  opacity: 1;
+}
+
+.react-flow__handle.eb-task-ball:hover {
+  background: var(--eb-accent);
+  transform: translate(0, -50%) scale(1.3);
 }
 
 .react-flow__handle-right.eb-ball:hover,
@@ -802,16 +837,48 @@ textarea.eb-file-text {
   color: var(--eb-ink);
 }
 
+/* Each segment is a chevron: a notch on the left, a point on the right that sits in the next notch,
+   with a thin gap between them. --eb-chevron must match CHEVRON in PlanBackground.tsx. */
 .eb-region.segment {
+  --eb-chevron: 18px;
+  --eb-chevron-gap: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #e9ecf5;
-  border-right: 1px solid #fff;
+  padding-left: var(--eb-chevron);
+  background: var(--eb-seg);
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--eb-chevron) - var(--eb-chevron-gap)) 0,
+    calc(100% - var(--eb-chevron-gap)) 50%,
+    calc(100% - var(--eb-chevron) - var(--eb-chevron-gap)) 100%,
+    0 100%,
+    var(--eb-chevron) 50%
+  );
+}
+
+.eb-region.segment.c0 {
+  --eb-seg: #b3c6ff;
+}
+
+.eb-region.segment.c1 {
+  --eb-seg: #a8e3bd;
+}
+
+.eb-region.segment.c2 {
+  --eb-seg: #ffd38a;
+}
+
+.eb-region.segment.c3 {
+  --eb-seg: #f2b3d6;
+}
+
+.eb-region.segment .eb-region-label {
+  color: #3a3f4b;
 }
 
 .eb-region.segment.today {
-  background: var(--eb-accent);
+  --eb-seg: var(--eb-accent);
 }
 
 .eb-region.segment.today .eb-region-label {
@@ -834,8 +901,12 @@ textarea.eb-file-text {
   border-color: var(--eb-accent);
 }
 
+.eb-region.segment.active {
+  background: var(--eb-seg);
+}
+
 .eb-region.segment.active:not(.today) {
-  background: #cdd6ff;
+  filter: saturate(1.5) brightness(0.9);
 }
 
 .eb-column {
@@ -850,15 +921,6 @@ textarea.eb-file-text {
 
 .eb-column.active {
   background: rgba(66, 98, 255, 0.1);
-}
-
-.eb-arrow-head {
-  position: absolute;
-  width: 0;
-  height: 0;
-  border-top: 18px solid transparent;
-  border-bottom: 18px solid transparent;
-  border-left: 18px solid #e9ecf5;
 }
 
 .eb-empty-hint {
@@ -912,4 +974,1084 @@ textarea.eb-file-text {
   .react-flow__node.eb-leaving {
     animation: none;
   }
+}
+
+/* --- Todo lists (*.todo.md file references in todo mode) ------------------------------- */
+
+.eb-view-switch {
+  flex: none;
+  display: inline-flex;
+  border: 1px solid var(--eb-line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.eb-view-switch button {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 7px;
+  border: none;
+  background: #fff;
+  color: var(--eb-muted);
+  cursor: pointer;
+}
+
+.eb-view-switch button + button {
+  border-left: 1px solid var(--eb-line);
+}
+
+.eb-view-switch button.active {
+  background: #eef1ff;
+  color: var(--eb-accent);
+  font-weight: 600;
+}
+
+.eb-todo-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 4px 6px;
+  outline: none;
+  color: var(--eb-ink);
+  cursor: default;
+}
+
+/* No margin of a child escapes the box, so its height is the height the list needs. */
+.eb-todo-list-content {
+  display: flow-root;
+}
+
+.eb-todo-far {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: var(--eb-muted);
+  text-align: center;
+  padding: 8px;
+}
+
+.eb-todo-far .overdue,
+.eb-todo-icon.overdue,
+.eb-todo-hint.overdue {
+  color: #d64545;
+}
+
+.eb-todo-heading {
+  font-weight: 700;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--eb-muted);
+  padding: 8px 6px 2px;
+}
+
+.eb-todo-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  /* The right padding keeps the ball at the row end clear of the text. */
+  padding: 3px 16px 3px 4px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+  line-height: 1.35;
+}
+
+/* Odd rows: light blue tint. Hover, selected and open come later and win. */
+.eb-todo-row.odd {
+  background: #d9e9fc;
+}
+
+/* Tree lines from a subtask to its parent (├── and └── like a file listing). */
+.eb-todo-tree {
+  position: absolute;
+  box-sizing: border-box;
+  border: 0 solid #8fa3bd;
+  pointer-events: none;
+}
+
+/* Odd subtasks: light green, so they do not read as tasks. */
+.eb-todo-row.odd-sub {
+  background: #dff1e3;
+}
+
+.eb-todo-row:hover {
+  background: #d3e4f8;
+}
+
+.eb-todo-row.selected {
+  background: #c5d8fa;
+}
+
+.eb-todo-list:focus-within .eb-todo-row.selected {
+  box-shadow: inset 0 0 0 1px var(--eb-accent);
+}
+
+.eb-todo-row.prio-high {
+  border-left-color: #e06666;
+}
+
+.eb-todo-row.prio-medium {
+  border-left-color: #e69138;
+}
+
+.eb-todo-row.prio-low {
+  border-left-color: #9fb3c8;
+}
+
+.eb-todo-row.done .eb-todo-main,
+.eb-todo-row.cancelled .eb-todo-main {
+  opacity: 0.5;
+}
+
+.eb-todo-row.cancelled .eb-todo-title {
+  text-decoration: line-through;
+}
+
+.eb-todo-row.dragging {
+  opacity: 0.4;
+}
+
+.eb-todo-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--eb-accent);
+}
+
+.eb-todo-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--eb-accent);
+}
+
+.eb-todo-row.drop-child {
+  box-shadow: inset 24px -2px 0 -22px var(--eb-accent);
+  background: #c5d8fa;
+}
+
+.eb-todo-grip {
+  flex: none;
+  /* 2px wider and 2px further left than the old 0.86em box, so the rest of the row (and the tree lines) stays in place. */
+  width: calc(0.86em + 2px);
+  margin-left: -6px;
+  color: #b8b8b8;
+  cursor: grab;
+  visibility: hidden;
+  /* As tall as the first text line (the row's line-height), with the icon in its middle. */
+  height: 1.35em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.eb-todo-row:hover .eb-todo-grip,
+.eb-todo-row.selected .eb-todo-grip {
+  visibility: visible;
+}
+
+.eb-todo-grip .codicon {
+  font-size: 1.03em;
+}
+
+.eb-todo-fold {
+  flex: none;
+  font-size: inherit;
+  width: 1.15em;
+  height: 1.35em;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--eb-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eb-todo-fold .codicon {
+  font-size: 0.86em;
+}
+
+/* A click on the title opens the details window. */
+.eb-todo-row .eb-todo-title,
+.eb-todo-card .eb-todo-title {
+  cursor: pointer;
+}
+
+.eb-todo-row:not(.cancelled) .eb-todo-title:hover,
+.eb-todo-card:not(.cancelled) .eb-todo-title:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.18em;
+}
+
+.eb-todo-check {
+  flex: none;
+  width: 1.07em;
+  height: 1.07em;
+  /* Centered on the first text line: (1.35em - 1.07em) / 2. */
+  margin-top: 0.14em;
+  font-size: inherit;
+  padding: 0;
+  border: 1.5px solid #8a8a8a;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.eb-todo-check.checked {
+  background: #3fa34d;
+  border-color: #3fa34d;
+}
+
+.eb-todo-check .codicon {
+  font-size: 0.8em;
+}
+
+/* In progress: a filled box with `>>`. */
+.eb-todo-check.progress {
+  border-color: var(--eb-accent);
+  background: var(--eb-accent);
+}
+
+.eb-todo-check svg {
+  width: 0.95em;
+  height: 0.95em;
+}
+
+.eb-todo-check.waiting {
+  border-style: dashed;
+}
+
+.eb-todo-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.eb-todo-line1 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 5px;
+}
+
+.eb-todo-title {
+  overflow-wrap: anywhere;
+}
+
+.eb-todo-title.empty {
+  color: #a0a0a0;
+  font-style: italic;
+}
+
+.eb-todo-note {
+  font-size: 0.85em;
+  color: var(--eb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eb-todo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.8em;
+  line-height: 1.4;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #f0f0f0;
+  color: #555;
+  white-space: nowrap;
+  border: none;
+  font-family: inherit;
+}
+
+.eb-todo-chip.tag {
+  background: #e6efff;
+  color: #2f5bd3;
+}
+
+.eb-todo-chip.person {
+  background: #f1e9ff;
+  color: #7041c2;
+}
+
+.eb-todo-chip.due.today {
+  background: #fff3bf;
+  color: #8a6d00;
+}
+
+.eb-todo-chip.due.overdue {
+  background: #ffe3e3;
+  color: #c92a2a;
+}
+
+.eb-todo-chip.link.done {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.eb-todo-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 0.8em;
+  color: var(--eb-muted);
+}
+
+.eb-todo-icon .codicon {
+  font-size: 1.1em;
+}
+
+.eb-todo-progress {
+  flex: none;
+  font-size: 0.8em;
+  color: var(--eb-muted);
+  padding-top: 1px;
+}
+
+.eb-todo-row .eb-warning {
+  padding-top: 1px;
+}
+
+.eb-todo-title-edit {
+  position: relative;
+}
+
+.eb-todo-title-input,
+.eb-todo-input {
+  font: inherit;
+  color: var(--eb-ink);
+  box-sizing: border-box;
+  border: 1px solid #c4c4c4;
+  border-radius: 3px;
+  padding: 1px 4px;
+  background: #fff;
+  min-width: 0;
+  user-select: text;
+}
+
+.eb-todo-title-input {
+  width: 100%;
+  border-color: var(--eb-accent);
+  outline: none;
+}
+
+.eb-todo-input:focus {
+  outline: none;
+  border-color: var(--eb-accent);
+}
+
+.eb-todo-input.invalid {
+  border-color: #d64545;
+}
+
+.eb-todo-kept {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding-top: 3px;
+}
+
+.eb-todo-kept .eb-todo-x {
+  font-size: 1em;
+  padding: 0 0 0 2px;
+  color: inherit;
+  opacity: 0.6;
+}
+
+.eb-todo-kept .eb-todo-x:hover {
+  opacity: 1;
+}
+
+.eb-todo-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 0 1px;
+}
+
+.eb-todo-suggest .eb-todo-chip {
+  cursor: pointer;
+}
+
+.eb-todo-suggest .eb-todo-chip.first {
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.eb-todo-hint {
+  font-size: 0.8em;
+  color: var(--eb-muted);
+}
+
+/* Details of one task: a window just right of the task title, in the flow viewport above all objects. */
+.eb-todo-panel {
+  position: absolute;
+  z-index: 2000;
+  pointer-events: all;
+  box-sizing: border-box;
+  width: 24em;
+  /* As tall as its fields; very long details scroll inside. */
+  max-height: 40em;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #c4c4c4;
+  border-radius: 6px;
+  box-shadow: var(--eb-panel-shadow);
+  color: var(--eb-ink);
+  font-family: var(--eb-font);
+  cursor: default;
+  user-select: text;
+}
+
+.eb-todo-panel-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.4em 0.4em 0.4em 0.7em;
+  border-bottom: 1px solid var(--eb-line);
+  background: #fafafa;
+  border-radius: 6px 6px 0 0;
+}
+
+.eb-todo-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--eb-ink);
+  padding: 1px 4px;
+  margin-left: -5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  text-overflow: ellipsis;
+}
+
+.eb-todo-panel-title:hover {
+  border-color: var(--eb-line);
+}
+
+.eb-todo-panel-title.invalid,
+.eb-todo-title-input.invalid {
+  border-color: #d64545;
+}
+
+.eb-todo-panel-title:focus {
+  outline: none;
+  border-color: var(--eb-accent);
+  background: #fff;
+}
+
+.eb-todo-panel-title.done {
+  text-decoration: line-through;
+  color: var(--eb-muted);
+}
+
+.eb-todo-panel-close {
+  flex: none;
+  font-size: inherit;
+  width: 1.5em;
+  height: 1.5em;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--eb-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eb-todo-panel-close:hover {
+  background: #ececec;
+  color: var(--eb-ink);
+}
+
+.eb-todo-panel-close .codicon {
+  font-size: 1em;
+}
+
+.eb-todo-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.6em 0.7em;
+}
+
+.eb-todo-row.open {
+  background: #c5d8fa;
+}
+
+.eb-todo-card.open {
+  border-color: var(--eb-accent);
+}
+
+.eb-todo-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9em;
+}
+
+.eb-todo-note-input {
+  width: 100%;
+  resize: vertical;
+}
+
+.eb-todo-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eb-todo-label {
+  flex: none;
+  width: 6.5em;
+  color: var(--eb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eb-todo-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.eb-todo-seg {
+  display: inline-flex;
+  border: 1px solid #c4c4c4;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.eb-todo-seg button {
+  font: inherit;
+  padding: 0 7px;
+  border: none;
+  background: #fff;
+  color: var(--eb-ink);
+  cursor: pointer;
+}
+
+.eb-todo-seg button + button {
+  border-left: 1px solid #c4c4c4;
+}
+
+.eb-todo-seg button.active {
+  background: var(--eb-accent);
+  color: #fff;
+}
+
+.eb-todo-x {
+  border: none;
+  background: none;
+  padding: 0 3px;
+  font-size: 1.1em;
+  line-height: 1;
+  color: var(--eb-muted);
+  cursor: pointer;
+}
+
+.eb-todo-x:hover {
+  color: #c92a2a;
+}
+
+.eb-todo-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.eb-todo-select {
+  font: inherit;
+  max-width: 14em;
+  border: 1px dashed #c4c4c4;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--eb-muted);
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.eb-todo-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.eb-todo-meta {
+  flex: 1 1 auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.85em;
+  color: #9a9a9a;
+}
+
+.eb-todo-small,
+.eb-todo-confirm button {
+  font: inherit;
+  font-size: 0.9em;
+  padding: 0 7px;
+  border: 1px solid #c4c4c4;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--eb-ink);
+  cursor: pointer;
+}
+
+.eb-todo-add-sub {
+  font: inherit;
+  border: 1px dashed #c4c4c4;
+  border-radius: 3px;
+  background: #fff;
+  color: var(--eb-muted);
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.eb-todo-add-sub:hover {
+  color: var(--eb-ink);
+  border-color: #8a8a8a;
+}
+
+.eb-todo-actions .eb-todo-small {
+  margin-left: auto;
+}
+
+.eb-todo-raw-lines {
+  font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+  font-size: 0.9em;
+  color: #b35c00;
+  background: #fff6e5;
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.eb-todo-rawedit {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.eb-todo-raw {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+  font-size: 0.9em;
+  white-space: pre;
+}
+
+.eb-todo-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 4px 4px;
+  padding: 4px 8px;
+  font-size: 0.9em;
+  background: #fff3bf;
+  border-radius: 4px;
+}
+
+.eb-todo-empty {
+  padding: 8px 6px 2px;
+  color: var(--eb-muted);
+  font-style: italic;
+}
+
+.eb-todo-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  font: inherit;
+  font-size: 0.9em;
+  color: var(--eb-muted);
+  cursor: pointer;
+}
+
+.eb-todo-add:hover {
+  background: #f0f0f0;
+  color: var(--eb-ink);
+}
+
+/* --- Todo list in board mode: Todo / In progress / Done lanes of one list ----------------- */
+
+.eb-todo-board {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  color: var(--eb-ink);
+  cursor: default;
+}
+
+.eb-todo-board .eb-todo-confirm {
+  margin: 6px 6px 0;
+}
+
+.eb-todo-lanes {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px;
+}
+
+.eb-todo-lane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f3f4f6;
+  border-radius: 5px;
+  padding: 4px;
+  overflow: auto;
+}
+
+.eb-todo-lane.drop-end {
+  box-shadow: inset 0 0 0 2px var(--eb-accent);
+}
+
+.eb-todo-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 5px;
+  font-size: 0.8em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--eb-muted);
+}
+
+.eb-todo-lane-count {
+  margin-left: auto;
+  font-weight: 400;
+}
+
+.eb-todo-new {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: none;
+  border-radius: 3px;
+  background: var(--eb-accent);
+  font: inherit;
+  font-size: 1em;
+  font-weight: 700;
+  letter-spacing: inherit;
+  text-transform: uppercase;
+  color: #fff;
+  cursor: pointer;
+}
+
+.eb-todo-new:hover {
+  filter: brightness(1.12);
+}
+
+.eb-todo-lane-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.eb-todo-card {
+  position: relative;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-left: 3px solid #e0e0e0;
+  border-radius: 4px;
+  padding: 4px 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  cursor: grab;
+  touch-action: none;
+  line-height: 1.35;
+}
+
+.eb-todo-card.selected {
+  border-color: var(--eb-accent);
+}
+
+.eb-todo-card.prio-high {
+  border-left-color: #e06666;
+}
+
+.eb-todo-card.prio-medium {
+  border-left-color: #e69138;
+}
+
+.eb-todo-card.prio-low {
+  border-left-color: #9fb3c8;
+}
+
+.eb-todo-card.done .eb-todo-title,
+.eb-todo-card.cancelled .eb-todo-title {
+  opacity: 0.55;
+}
+
+.eb-todo-card.cancelled .eb-todo-title {
+  text-decoration: line-through;
+}
+
+.eb-todo-card.dragging {
+  opacity: 0.4;
+}
+
+.eb-todo-card.drop-before {
+  box-shadow: 0 -3px 0 var(--eb-accent);
+}
+
+.eb-todo-card.drop-after {
+  box-shadow: 0 3px 0 var(--eb-accent);
+}
+
+.eb-todo-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.eb-todo-card-head .eb-todo-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.eb-todo-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 4px;
+  margin-top: 2px;
+  padding-left: 1.45em;
+}
+
+.eb-todo-card-chips:empty {
+  display: none;
+}
+
+.eb-todo-card .eb-todo-note {
+  padding-left: 1.45em;
+}
+
+/* Codicons are 16px by default: in todo lists they follow the font size. */
+.eb-todo-add .codicon,
+.eb-todo-list .eb-warning .codicon,
+.eb-todo-board .eb-warning .codicon {
+  font-size: 1em;
+}
+
+/* --- Todo list in timeline mode: cards under the segment of their due date ------------------ */
+
+.eb-todo-timeline {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  color: var(--eb-ink);
+  cursor: default;
+}
+
+.eb-todo-tl-bar {
+  flex: none;
+  display: flex;
+  padding: 6px 6px 0;
+}
+
+.eb-todo-tl-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+}
+
+.eb-todo-tl-arrow {
+  display: flex;
+  gap: 6px;
+  min-height: 12em;
+}
+
+.eb-todo-tl-seg {
+  flex: none;
+  width: 12em;
+  display: flex;
+  flex-direction: column;
+  background: #f3f4f6;
+  border-radius: 5px;
+  padding: 4px;
+}
+
+.eb-todo-tl-seg.today .eb-todo-tl-head {
+  color: var(--eb-accent);
+}
+
+.eb-todo-tl-seg.drop-end,
+.eb-todo-tl-unscheduled.drop-end {
+  box-shadow: inset 0 0 0 2px var(--eb-accent);
+}
+
+.eb-todo-tl-head {
+  padding: 2px 4px 5px;
+  font-size: 0.8em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--eb-muted);
+}
+
+.eb-todo-tl-unscheduled {
+  margin-top: 8px;
+  min-height: 5em;
+  background: #f3f4f6;
+  border-radius: 5px;
+  padding: 4px;
+}
+
+.eb-todo-tl-unscheduled-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.eb-todo-tl-unscheduled-cards .eb-todo-card {
+  width: 12em;
+}
+
+.eb-todo-timeline .eb-warning .codicon,
+.eb-todo-timeline .eb-todo-card-head .codicon {
+  font-size: 1em;
+}
+
+.eb-todo-page .eb-todo-timeline.standalone {
+  position: relative;
+  width: max-content;
+  min-width: 100%;
+  padding-bottom: 4em;
+}
+
+.eb-todo-page .eb-todo-timeline.standalone .eb-todo-tl-scroll {
+  overflow: visible;
+  padding: 1em;
+}
+
+.eb-todo-page .eb-todo-timeline.standalone .eb-todo-tl-bar {
+  padding: 1em 1em 0;
+}
+
+/* --- Full todo editor (a *.todo.md file as an editor tab of its own) ----------------------- */
+
+.eb-todo-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fff;
+  color: var(--eb-ink);
+  font-family: var(--eb-font);
+}
+
+.eb-todo-page-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.5em 1em;
+  border-bottom: 1px solid var(--eb-line);
+  background: #fafafa;
+  font-size: 0.85em;
+}
+
+.eb-todo-page-head .codicon {
+  font-size: 1em;
+}
+
+.eb-todo-page-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.eb-todo-page .eb-view-switch button {
+  font-size: 0.9em;
+  padding: 0.15em 0.8em;
+}
+
+.eb-todo-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font: inherit;
+  padding: 0.15em 0.7em;
+  border: 1px solid var(--eb-line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--eb-ink);
+  cursor: pointer;
+}
+
+.eb-todo-back:hover {
+  background: #f0f0f0;
+}
+
+/* The page scrolls, down for a long list, and sideways when the lanes do not fit. */
+.eb-todo-page-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.eb-todo-page-note {
+  padding: 1em;
+  color: var(--eb-muted);
+}
+
+.eb-todo-page .eb-todo-list.standalone {
+  position: relative;
+  overflow: visible;
+  max-width: 60em;
+  margin: 0 auto;
+  padding: 1em 1em 4em;
+}
+
+.eb-todo-page .eb-todo-board.standalone {
+  position: relative;
+  /* Three lanes of 16em, their gaps and padding. */
+  min-width: 52em;
+  padding-bottom: 4em;
+}
+
+.eb-todo-page .eb-todo-board.standalone .eb-todo-lanes {
+  grid-template-columns: repeat(3, minmax(16em, 1fr));
+  padding: 1em;
+}
+
+.eb-todo-page .eb-todo-board.standalone .eb-todo-lane {
+  overflow: visible;
 }

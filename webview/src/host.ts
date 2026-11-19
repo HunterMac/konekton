@@ -16,9 +16,11 @@ export interface Host {
 export interface HostFeatures {
   /** File reference objects: preview, edit, open, pick, drop. */
   fileReferences: boolean;
+  /** A todo file reference can open as a full editor of its own, and go back. */
+  todoFullscreen: boolean;
 }
 
-export const ALL_FEATURES: HostFeatures = { fileReferences: true };
+export const ALL_FEATURES: HostFeatures = { fileReferences: true, todoFullscreen: true };
 
 export interface SavedViewport {
   x: number;
@@ -31,6 +33,8 @@ export interface ViewState {
   mode?: Mode;
   viewports?: Partial<Record<Mode, SavedViewport>>;
   timelineScale?: Scale;
+  /** The full todo editor: list or lanes. */
+  todoView?: 'todo' | 'board' | 'timeline';
   /** Old single viewport. Read as the Chaos viewport. */
   viewport?: SavedViewport;
 }

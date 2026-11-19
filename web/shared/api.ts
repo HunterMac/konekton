@@ -9,6 +9,12 @@ export const API = {
   board: '/__konekton/board',
   /** PUT: write a copy under the first free `<name>_web….canvas`. `?name=<board>`. */
   saveAs: '/__konekton/save-as',
+  /** GET: text files the boards may reference (`.md`, `.txt`, `.json`), for the file picker. */
+  files: '/__konekton/files',
+  /** GET: read a referenced file. PUT (`FileSaveRequest`): save it. `?path=<path relative to the boards folder>`. */
+  file: '/__konekton/file',
+  /** PUT (`{ text }`): create `<name>.todo.md` in the boards folder; never overwrites. `?name=<typed name>`. */
+  todoFile: '/__konekton/todo-file',
 } as const;
 
 /** Largest board file and request body the server accepts. */
@@ -50,6 +56,31 @@ export interface ConflictResponse {
   etag?: string;
 }
 
+export interface FileListResponse {
+  paths: string[];
+}
+
+/** Same statuses as the extension's `fileContent` message. */
+export interface FileResponse {
+  status: 'ok' | 'missing' | 'binary' | 'tooLarge';
+  text?: string;
+}
+
+/** Save only when the file still has `baseText` (line endings ignored), unless `force`. 412 otherwise. */
+export interface FileSaveRequest {
+  text: string;
+  baseText: string;
+  force?: boolean;
+}
+
+export interface TodoFileResponse {
+  path: string;
+}
+
+export interface FileChangedEvent {
+  path: string;
+}
+
 export interface ErrorResponse {
   error: string;
 }
@@ -59,6 +90,8 @@ export const EVENTS = {
   changed: 'konekton:changed',
   removed: 'konekton:removed',
   list: 'konekton:list',
+  /** A referenced text file was written, created or deleted, by anyone. */
+  fileChanged: 'konekton:file-changed',
 } as const;
 
 export interface ChangedEvent {
@@ -75,5 +108,6 @@ declare module 'vite/types/customEvent.d.ts' {
     'konekton:changed': ChangedEvent;
     'konekton:removed': RemovedEvent;
     'konekton:list': Record<string, never>;
+    'konekton:file-changed': FileChangedEvent;
   }
 }

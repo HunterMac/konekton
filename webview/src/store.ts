@@ -19,6 +19,7 @@ import {
   type Side,
   type Status,
 } from '../../src/shared/canvasFormat';
+import { ensureTaskId, parseTodo, taskById } from '../../src/shared/todoFormat';
 import type { BoardSettings, ExtensionMessage, FileStatus, WebviewMessage } from '../../src/shared/protocol';
 import { buildFragment, deltaToPlace, instantiate, parseFragment, type Fragment } from './clipboard';
 import { facingSide, snap, type Anchor, type Point } from './geometry';
@@ -27,7 +28,7 @@ import { DocSync } from './sync';
 import { ALL_FEATURES, type HostFeatures } from './host';
 import type { SnapGuide } from './snapping';
 
-export type Tool = 'select' | 'sticky' | 'rectangle' | 'file' | 'link';
+export type Tool = 'select' | 'sticky' | 'rectangle' | 'file' | 'link' | 'todo';
 export type NodeKind = BoardNode['kind'];
 
 export const GRID_STEP = 20;
@@ -45,6 +46,11 @@ export interface FileEdit {
   draft: string;
   conflict: boolean;
   saving: boolean;
+}
+
+export interface TodoSaveError {
+  conflict: boolean;
+  message: string;
 }
 
 export interface EditTarget {
@@ -95,6 +101,14 @@ export interface BoardState {
   tool: Tool;
   files: Record<string, FileState>;
   fileEdits: Record<string, FileEdit>;
+  /** Todo files whose last save failed: path → message. The list keeps showing the unsaved text. */
+  todoSaveErrors: Record<string, TodoSaveError>;
+  /** The todo object whose task details panel is open. Only one panel is open on the board. UI only. */
+  todoPanelOwner: string | null;
+  /** Set in the full todo editor: the file it shows (its name next to the document). Null on a board. */
+  todoFile: string | null;
+  /** The canvases that show the file of the full todo editor, as short names. */
+  todoCanvases: string[];
   chooser: Chooser | null;
   contextMenu: ContextMenuState | null;
   endpointDrag: EndpointDrag | null;
@@ -117,7 +131,7 @@ export interface NodeInit {
 }
 
 export interface BoardActions {
-  init(text: string, settings: BoardSettings): void;
+  init(text: string, settings: BoardSettings, focusNode?: string): void;
   applyExternal(text: string): void;
   handleMessage(message: ExtensionMessage): void;
 
@@ -152,7 +166,12 @@ export interface BoardActions {
    */
   createNode(init: NodeInit, from?: { nodeId: string; side: Side; offset: number }): string;
   createFileNodes(paths: string[], at: Point): void;
-  connect(from: { nodeId: string; anchor: Anchor }, to: { nodeId: string; anchor: Anchor }): string | undefined;
+  connect(from: { nodeId: string; anchor: Anchor }, to: { nodeId: string; anchor: Anchor }, fromTask?: string): string | undefined;
+  /**
+   * A line from a task of a todo file object to another object. `taskKey` is the task's id, or `@<line>` for a task
+   * that has none yet (it gets one, written to the todo file). `offset` is where the task row is on the object's right side.
+   */
+  connectTask(nodeId: string, taskKey: string, offset: number, to: { nodeId: string; anchor: Anchor }): string | undefined;
   reconnect(edgeId: string, end: 'from' | 'to', nodeId: string, anchor: Anchor): void;
 
   addToPlan(type: PlanType, nodeIds: string[]): void;
@@ -181,6 +200,10 @@ export interface BoardActions {
   promptUrl(initial?: string): Promise<string | undefined>;
   resolveDropped(uris: string[]): Promise<string[]>;
   openFile(path: string): void;
+  /** Open the todo file of a card as a full editor tab. */
+  openTodoFullscreen(nodeId: string): void;
+  /** In the full todo editor: show the canvas that has the file. */
+  backToCanvas(): void;
   openUrl(url: string): void;
   reopenAsText(): void;
   watchFiles(paths: string[]): void;
@@ -190,6 +213,22 @@ export interface BoardActions {
   endFileEdit(nodeId: string): void;
   reloadFile(nodeId: string): void;
   overwriteFile(nodeId: string): void;
+
+  /**
+   * Todo mode edit: show `text` at once and save it to the file. Saves of one file go out one at a
+   * time; while one is on its way, only the newest text waits. Each call is one todo undo step.
+   */
+  writeTodo(path: string, text: string): void;
+  /** Undo / redo the last todo mode edit of a file. Returns false when there is nothing to undo. */
+  undoTodo(path: string): boolean;
+  redoTodo(path: string): boolean;
+  /** After a failed save: drop the unsaved text and show the file as it is on disk. */
+  reloadTodo(path: string): void;
+  /** After a failed save: write the unsaved text over the file (after a conflict), or try the save again. */
+  overwriteTodo(path: string): void;
+  /** Ask the host for a name, create `<name>.todo.md`, and return its path. */
+  createTodoFile(): Promise<string | undefined>;
+  setTodoPanelOwner(nodeId: string | null): void;
 }
 
 export type BoardStore = StoreApi<BoardState & BoardActions>;
@@ -296,6 +335,45 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
 
     const fileEditsForPath = (path: string) => Object.entries(get().fileEdits).filter(([, e]) => e.path === path);
 
+    // --- Todo mode saves ---------------------------------------------------------------------
+    /** Last text the host reported for each file. */
+    const diskTexts = new Map<string, string>();
+    /** `base`: the text the file has (or will have) when the in-flight save is done. */
+    const todoSaves = new Map<string, { base: string; inFlight: string | null; queued: string | null }>();
+    const todoHistory = new Map<string, { past: string[]; future: string[] }>();
+    const HISTORY_LIMIT = 200;
+
+    const todoPending = (path: string) => {
+      const s = todoSaves.get(path);
+      return s !== undefined && (s.inFlight !== null || s.queued !== null);
+    };
+
+    const sendTodo = (path: string, text: string, force = false) => {
+      const entry = todoSaves.get(path)!;
+      entry.inFlight = text;
+      entry.queued = null;
+      post({ type: 'saveFile', path, text, baseText: entry.base, ...(force ? { force: true } : {}) });
+    };
+
+    /** Show `text` and save it. */
+    const showAndSave = (path: string, text: string) => {
+      const current = get().files[path]?.text ?? '';
+      let entry = todoSaves.get(path);
+      if (!entry || (entry.inFlight === null && entry.queued === null && !get().todoSaveErrors[path])) {
+        // Nothing on its way: the file is as the host last reported it.
+        entry = { base: diskTexts.get(path) ?? current, inFlight: null, queued: null };
+        todoSaves.set(path, entry);
+      }
+      set({ files: { ...get().files, [path]: { status: 'ok', text } } });
+      if (get().todoSaveErrors[path]) {
+        // Wait for the user to pick Reload or Overwrite.
+        entry.queued = text;
+        return;
+      }
+      if (entry.inFlight === null) sendTodo(path, text);
+      else entry.queued = text;
+    };
+
     return {
       ready: false,
       mode: initialMode,
@@ -310,6 +388,10 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
       tool: 'select',
       files: {},
       fileEdits: {},
+      todoSaveErrors: {},
+      todoPanelOwner: null,
+      todoFile: null,
+      todoCanvases: [],
       chooser: null,
       contextMenu: null,
       endpointDrag: null,
@@ -318,7 +400,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
       snapGuides: [],
       features,
 
-      init(text, settings) {
+      init(text, settings, focusNode) {
         sync.reset(text);
         const r = parse(text);
         set({
@@ -327,6 +409,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
           doc: r.ok ? r.doc : emptyDoc(),
           parseError: r.ok ? null : r.error,
         });
+        if (focusNode !== undefined) get().showInChaos(focusNode);
       },
 
       applyExternal(text) {
@@ -354,7 +437,16 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
       handleMessage(message) {
         switch (message.type) {
           case 'init':
-            get().init(message.text, message.settings);
+            get().init(message.text, message.settings, message.focusNode);
+            return;
+          case 'focusNode':
+            if (get().doc.nodes.some((n) => isBoardNode(n) && n.id === message.id)) get().showInChaos(message.id);
+            return;
+          case 'initTodo':
+            set({ ready: true, todoFile: message.path });
+            return;
+          case 'todoReferences':
+            set({ todoCanvases: message.canvases });
             return;
           case 'docChanged':
             get().applyExternal(message.text);
@@ -363,6 +455,15 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
             set({ settings: { gridEnabled: message.gridEnabled } });
             return;
           case 'fileContent': {
+            if (message.status === 'ok' && message.text !== undefined) diskTexts.set(message.path, message.text);
+            else diskTexts.delete(message.path);
+            const known = get().files[message.path];
+            if (todoPending(message.path) || get().todoSaveErrors[message.path]) {
+              // Our own save is on its way, or failed: keep showing the todo text.
+              return;
+            }
+            // A change from outside makes the todo undo history stale.
+            if (known?.text !== undefined && known.text.replace(/\r\n/g, '\n') !== message.text?.replace(/\r\n/g, '\n')) todoHistory.delete(message.path);
             const files = { ...get().files, [message.path]: { status: message.status, text: message.text } };
             const fileEdits = { ...get().fileEdits };
             for (const [nodeId, edit] of fileEditsForPath(message.path)) {
@@ -374,6 +475,20 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
             return;
           }
           case 'fileSaveResult': {
+            const todo = todoSaves.get(message.path);
+            if (todo && todo.inFlight !== null) {
+              if (message.ok) {
+                diskTexts.set(message.path, todo.inFlight);
+                todo.base = todo.inFlight;
+                todo.inFlight = null;
+                if (todo.queued !== null) sendTodo(message.path, todo.queued);
+              } else {
+                todo.queued = todo.queued ?? todo.inFlight;
+                todo.inFlight = null;
+                const error: TodoSaveError = message.conflict ? { conflict: true, message: 'File changed on disk' } : { conflict: false, message: message.error ?? 'Could not save the file' };
+                set({ todoSaveErrors: { ...get().todoSaveErrors, [message.path]: error } });
+              }
+            }
             const fileEdits = { ...get().fileEdits };
             const files = { ...get().files };
             for (const [nodeId, edit] of fileEditsForPath(message.path)) {
@@ -388,6 +503,9 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
             return;
           }
           case 'pickFileResult':
+            resolveRequest(message.requestId, message.path);
+            return;
+          case 'createTodoFileResult':
             resolveRequest(message.requestId, message.path);
             return;
           case 'promptUrlResult':
@@ -405,7 +523,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
       setMode(mode) {
         if (mode === get().mode) return;
         get().setEditing(null);
-        set({ mode, selNodes: [], selEdges: [], editing: null, labelEditing: null, contextMenu: null, chooser: null, endpointDrag: null, snapGuides: [], tool: 'select' });
+        set({ todoPanelOwner: null, mode, selNodes: [], selEdges: [], editing: null, labelEditing: null, contextMenu: null, chooser: null, endpointDrag: null, snapGuides: [], tool: 'select' });
       },
 
       showInChaos(id) {
@@ -532,7 +650,21 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
         addFragment({ nodes, edges: [] });
       },
 
-      connect(from, to) {
+      connectTask(nodeId, taskKey, offset, to) {
+        if (!chaosOnly()) return undefined;
+        const node = boardNodes(get().doc).find((n) => n.id === nodeId);
+        if (!node || node.kind !== 'file' || nodeId === to.nodeId) return undefined;
+        const text = get().files[node.file]?.text;
+        if (text === undefined) return undefined;
+        const todo = parseTodo(text);
+        const index = taskKey.startsWith('@') ? todo.tasks.findIndex((t) => t.line === Number(taskKey.slice(1))) : taskById(todo, taskKey);
+        if (index < 0) return undefined;
+        const { text: next, id } = ensureTaskId(todo, index);
+        if (next !== text) get().writeTodo(node.file, next);
+        return get().connect({ nodeId, anchor: { side: 'right', offset: Math.min(1, Math.max(0, offset)) } }, to, id);
+      },
+
+      connect(from, to, fromTask) {
         if (!chaosOnly()) return undefined;
         if (from.nodeId === to.nodeId) return undefined;
         const edge: BoardEdge = {
@@ -545,6 +677,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
           toSide: to.anchor.side,
           toEnd: 'arrow',
           toOffset: to.anchor.offset,
+          ...(fromTask !== undefined ? { fromTask } : {}),
           label: '',
           extra: {},
           elExtra: {},
@@ -558,7 +691,7 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
       reconnect(edgeId, end, nodeId, anchor) {
         if (!chaosOnly()) return;
         const patch: Partial<BoardEdge> =
-          end === 'from' ? { fromNode: nodeId, fromSide: anchor.side, fromOffset: anchor.offset } : { toNode: nodeId, toSide: anchor.side, toOffset: anchor.offset };
+          end === 'from' ? { fromNode: nodeId, fromSide: anchor.side, fromOffset: anchor.offset, fromTask: undefined } : { toNode: nodeId, toSide: anchor.side, toOffset: anchor.offset };
         get().updateEdge(edgeId, patch);
       },
 
@@ -683,6 +816,11 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
       promptUrl: (initial) => request<string | undefined>((requestId) => ({ type: 'promptUrl', requestId, initial })),
       resolveDropped: (uris) => request<string[]>((requestId) => ({ type: 'resolveDroppedFiles', requestId, uris })),
       openFile: (path) => post({ type: 'openFile', path }),
+      openTodoFullscreen(nodeId) {
+        const node = get().doc.nodes.find((n) => isBoardNode(n) && n.id === nodeId);
+        if (node?.kind === 'file') post({ type: 'openTodoFullscreen', path: node.file, nodeId });
+      },
+      backToCanvas: () => post({ type: 'backToCanvas' }),
       openUrl: (url) => post({ type: 'openUrl', url }),
       reopenAsText: () => post({ type: 'reopenAsText' }),
       watchFiles: (paths) => post({ type: 'watchFiles', paths }),
@@ -742,6 +880,63 @@ export function createBoardStore(post: (message: WebviewMessage) => void, initia
         });
         post({ type: 'saveFile', path: edit.path, text: edit.draft, baseText: edit.baseText, force: true });
       },
+
+      writeTodo(path, text) {
+        const current = get().files[path]?.text;
+        if (current === undefined || current === text) return;
+        const h = todoHistory.get(path) ?? { past: [], future: [] };
+        h.past.push(current);
+        if (h.past.length > HISTORY_LIMIT) h.past.shift();
+        h.future = [];
+        todoHistory.set(path, h);
+        showAndSave(path, text);
+      },
+
+      undoTodo(path) {
+        const h = todoHistory.get(path);
+        const current = get().files[path]?.text;
+        const prev = h?.past.pop();
+        if (!h || prev === undefined || current === undefined) return false;
+        h.future.push(current);
+        showAndSave(path, prev);
+        return true;
+      },
+
+      redoTodo(path) {
+        const h = todoHistory.get(path);
+        const current = get().files[path]?.text;
+        const next = h?.future.pop();
+        if (!h || next === undefined || current === undefined) return false;
+        h.past.push(current);
+        showAndSave(path, next);
+        return true;
+      },
+
+      reloadTodo(path) {
+        todoSaves.delete(path);
+        todoHistory.delete(path);
+        const errors = { ...get().todoSaveErrors };
+        delete errors[path];
+        const disk = diskTexts.get(path);
+        set({ todoSaveErrors: errors, files: { ...get().files, [path]: disk !== undefined ? { status: 'ok', text: disk } : { status: 'missing' } } });
+      },
+
+      overwriteTodo(path) {
+        const entry = todoSaves.get(path);
+        const text = get().files[path]?.text;
+        const error = get().todoSaveErrors[path];
+        if (!entry || text === undefined) return;
+        const errors = { ...get().todoSaveErrors };
+        delete errors[path];
+        set({ todoSaveErrors: errors });
+        entry.base = diskTexts.get(path) ?? entry.base;
+        // Only a conflict is overwritten. A retry after another error still checks the base, so an outside change
+        // made since then shows up as a conflict instead of being lost.
+        sendTodo(path, text, error?.conflict === true);
+      },
+
+      createTodoFile: () => request<string | undefined>((requestId) => ({ type: 'createTodoFile', requestId })),
+      setTodoPanelOwner: (todoPanelOwner) => set({ todoPanelOwner }),
     };
   });
 }

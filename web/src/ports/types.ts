@@ -1,6 +1,6 @@
 // Ports: each browser feature the web host uses sits behind one of these. A later standalone app swaps one at a time.
 
-import type { BoardInfo } from '../../shared/api';
+import type { BoardInfo, FileResponse } from '../../shared/api';
 
 export interface LoadedBoard {
   text: string;
@@ -25,6 +25,20 @@ export interface BoardStorage {
   watch(listener: (event: StorageEvent) => void): () => void;
 }
 
+export type FileSaveResult = { ok: true } | { ok: false; conflict: boolean; error?: string };
+
+/** Text files the boards reference (file references and todo lists), as paths relative to the boards folder. */
+export interface FileStore {
+  list(): Promise<string[]>;
+  read(path: string): Promise<FileResponse>;
+  /** Save when the file still has `baseText`, unless `force`; else `conflict`. */
+  save(path: string, text: string, baseText: string, force: boolean): Promise<FileSaveResult>;
+  /** Create `<name>.todo.md`; never overwrite. 'exists' when taken; `{ error }` for a bad name. */
+  createTodo(name: string): Promise<{ path: string } | 'exists' | { error: string }>;
+  /** A file changed, was created or deleted (also by this page). Returns a function that stops listening. */
+  watch(listener: (path: string) => void): () => void;
+}
+
 export interface Env {
   /** '' when the browser refuses. */
   clipboardRead(): Promise<string>;
@@ -33,6 +47,10 @@ export interface Env {
   openExternal(url: string): void;
   /** The "Open as text" page for a board, in a new tab. */
   openRaw(name: string): void;
+  /** A page with the text of a referenced file, in a new tab. */
+  openFile(path: string): void;
+  /** The full todo editor for a todo file, in a new tab. `from`: the board that has the card. */
+  openTodo(path: string, from: string): void;
 }
 
 export interface Dialogs {

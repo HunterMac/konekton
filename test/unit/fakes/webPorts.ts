@@ -1,8 +1,54 @@
 // Fake ports for the web host tests: in-memory storage, recorded dialogs, plain settings and view state.
 
-import type { BoardInfo } from '../../../web/shared/api';
+import type { BoardInfo, FileResponse } from '../../../web/shared/api';
+import { todoFileName } from '../../../src/shared/todoFormat';
 import { webCopyName } from '../../../web/shared/boardNames';
-import type { BoardStorage, Dialogs, Env, LoadedBoard, SaveResult, Settings, StorageEvent, ViewStateStore } from '../../../web/src/ports/types';
+import type { BoardStorage, Dialogs, Env, FileSaveResult, FileStore, LoadedBoard, SaveResult, Settings, StorageEvent, ViewStateStore } from '../../../web/src/ports/types';
+
+/** In-memory referenced files. `change` is an outside edit that the watchers see. */
+export class FakeFiles implements FileStore {
+  readonly disk = new Map<string, string>();
+  readonly saves: { path: string; text: string; baseText: string; force: boolean }[] = [];
+  private listeners = new Set<(path: string) => void>();
+
+  /** An outside change: writes the file and tells the watchers. */
+  change(path: string, text: string | undefined): void {
+    if (text === undefined) this.disk.delete(path);
+    else this.disk.set(path, text);
+    for (const l of this.listeners) l(path);
+  }
+
+  async list(): Promise<string[]> {
+    return [...this.disk.keys()].sort();
+  }
+
+  async read(path: string): Promise<FileResponse> {
+    const text = this.disk.get(path);
+    return text === undefined ? { status: 'missing' } : { status: 'ok', text };
+  }
+
+  async save(path: string, text: string, baseText: string, force: boolean): Promise<FileSaveResult> {
+    this.saves.push({ path, text, baseText, force });
+    const current = this.disk.get(path);
+    if (current === undefined) return { ok: false, conflict: false, error: 'The file does not exist' };
+    if (!force && current !== baseText) return { ok: false, conflict: true };
+    this.change(path, text);
+    return { ok: true };
+  }
+
+  async createTodo(name: string): Promise<{ path: string } | 'exists' | { error: string }> {
+    const r = todoFileName(name);
+    if ('error' in r) return r;
+    if (this.disk.has(r.name)) return 'exists';
+    this.change(r.name, '- [ ] \n');
+    return { path: r.name };
+  }
+
+  watch(listener: (path: string) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
 
 export class FakeStorage implements BoardStorage {
   readonly disk = new Map<string, LoadedBoard>();
@@ -108,6 +154,7 @@ export class FakeDialogs implements Dialogs {
 export class FakeEnv implements Env {
   readonly opened: string[] = [];
   readonly raw: string[] = [];
+  readonly files: string[] = [];
   readonly written: string[] = [];
   clipboard: string | Error = '';
 
@@ -127,6 +174,16 @@ export class FakeEnv implements Env {
 
   openRaw(name: string): void {
     this.raw.push(name);
+  }
+
+  openFile(path: string): void {
+    this.files.push(path);
+  }
+
+  readonly todos: { path: string; from: string }[] = [];
+
+  openTodo(path: string, from: string): void {
+    this.todos.push({ path, from });
   }
 }
 

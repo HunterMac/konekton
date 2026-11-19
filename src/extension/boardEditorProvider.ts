@@ -1,14 +1,22 @@
 import * as vscode from 'vscode';
 import { isHttpUrl, type ExtensionMessage, type WebviewMessage } from '../shared/protocol';
 import { relativePath } from '../shared/paths';
+import { isTodoPath, todoFileName } from '../shared/todoFormat';
 import { ReferencedFiles } from './referencedFiles';
+import type { TodoOrigin, TodoSession } from './todoEditorProvider';
 import { getWebviewHtml } from './webviewHtml';
 
 const GRID_SETTING = 'grid.enabled';
 
+export const BOARD_VIEW_TYPE = 'konekton.board';
+
+/** Opens a todo file in the full todo editor. Set by `activate()`. */
+export type TodoOpener = (uri: vscode.Uri, origin: TodoOrigin) => Promise<void>;
+
 /** Exposed by `activate()` for the integration tests. */
 export interface KonektonApi {
   getSessions(): BoardSession[];
+  getTodoSessions(): TodoSession[];
 }
 
 /** One open board view: a document, its webview, and everything that must be cleaned up with it. */
@@ -17,6 +25,8 @@ export class BoardSession implements vscode.Disposable {
   private readonly referenced: ReferencedFiles;
   private readonly canvasDir: vscode.Uri;
   private readonly postEmitter = new vscode.EventEmitter<ExtensionMessage>();
+  /** True while the webview runs: it said `ready` and has not been hidden since (a hidden webview is destroyed). */
+  private live = false;
 
   /** Fires for every message sent to the webview. */
   readonly onDidPostMessage = this.postEmitter.event;
@@ -26,6 +36,9 @@ export class BoardSession implements vscode.Disposable {
     private readonly panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     private readonly onDispose: (s: BoardSession) => void,
+    private readonly openTodo?: TodoOpener,
+    /** A card to select and center when the webview starts. */
+    private pendingFocus?: string,
   ) {
     this.canvasDir = vscode.Uri.joinPath(document.uri, '..');
     this.referenced = new ReferencedFiles(this.canvasDir, (m) => this.post(m));
@@ -47,6 +60,7 @@ export class BoardSession implements vscode.Disposable {
       }),
       panel.onDidChangeViewState((e) => {
         if (e.webviewPanel.visible) this.referenced.readAll();
+        else this.live = false;
       }),
       panel.onDidDispose(() => this.dispose()),
     );
@@ -64,15 +78,20 @@ export class BoardSession implements vscode.Disposable {
   /** Handle one webview message. Public so tests can drive a session without a real webview. */
   async handleMessage(m: WebviewMessage): Promise<void> {
     switch (m.type) {
-      case 'ready':
+      case 'ready': {
+        this.live = true;
+        const focusNode = this.pendingFocus;
+        this.pendingFocus = undefined;
         this.post({
           type: 'init',
           text: this.document.getText(),
           version: this.document.version,
           settings: { gridEnabled: this.gridEnabled() },
           canvasDir: this.canvasDir.path,
+          ...(focusNode !== undefined ? { focusNode } : {}),
         });
         return;
+      }
       case 'edit':
         await this.applyEdit(m.text);
         return;
@@ -89,6 +108,9 @@ export class BoardSession implements vscode.Disposable {
         return;
       case 'promptUrl':
         this.post({ type: 'promptUrlResult', requestId: m.requestId, url: await this.promptUrl(m.initial) });
+        return;
+      case 'createTodoFile':
+        this.post({ type: 'createTodoFileResult', requestId: m.requestId, path: await this.createTodoFile() });
         return;
       case 'resolveDroppedFiles':
         this.post({ type: 'droppedFilesResult', requestId: m.requestId, paths: await this.referenced.resolveDropped(m.uris) });
@@ -111,6 +133,18 @@ export class BoardSession implements vscode.Disposable {
       case 'reopenAsText':
         await vscode.commands.executeCommand('vscode.openWith', this.document.uri, 'default');
         return;
+      case 'openTodoFullscreen':
+        if (isTodoPath(m.path)) await this.openTodo?.(this.referenced.uriFor(m.path), { canvas: this.document.uri, nodeId: m.nodeId });
+        return;
+    }
+  }
+
+  /** Select and center a card. A webview that is not running gets it with its next `init`. */
+  focusNode(id: string): void {
+    if (this.live && this.panel.visible) {
+      this.post({ type: 'focusNode', id });
+    } else {
+      this.pendingFocus = id;
     }
   }
 
@@ -142,6 +176,39 @@ export class BoardSession implements vscode.Disposable {
     return value?.trim();
   }
 
+  /** Ask for a name and create `<name>.todo.md` with one empty task next to the board. Returns its path. */
+  private async createTodoFile(): Promise<string | undefined> {
+    const exists = async (name: string) => {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.joinPath(this.canvasDir, name));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const value = await vscode.window.showInputBox({
+      prompt: 'Name of the todo list',
+      placeHolder: 'home',
+      validateInput: async (v) => {
+        const r = todoFileName(v);
+        if ('error' in r) return r.error;
+        if (await exists(r.name)) return `${r.name} already exists.`;
+        return undefined;
+      },
+    });
+    if (value === undefined) return undefined;
+    const r = todoFileName(value);
+    if ('error' in r || (await exists(r.name))) return undefined;
+    const name = r.name;
+    try {
+      await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(this.canvasDir, name), new TextEncoder().encode('- [ ] \n'));
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Could not create ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    return name;
+  }
+
   private async openFile(path: string): Promise<void> {
     const uri = this.referenced.uriFor(path);
     try {
@@ -160,6 +227,9 @@ export class BoardSession implements vscode.Disposable {
 
 export class BoardEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly active = new Set<BoardSession>();
+  /** Cards to center in boards that are not open yet, by board URI. */
+  private readonly focus = new Map<string, string>();
+  private openTodo: TodoOpener | undefined;
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -167,8 +237,25 @@ export class BoardEditorProvider implements vscode.CustomTextEditorProvider {
     return [...this.active];
   }
 
+  /** Where "open fullscreen" on a todo card sends the file. */
+  setTodoOpener(opener: TodoOpener): void {
+    this.openTodo = opener;
+  }
+
+  /** Show a board with one card selected and centered, in the active editor group. */
+  async openBoard(uri: vscode.Uri, nodeId: string): Promise<void> {
+    const key = uri.toString();
+    const open = [...this.active].filter((s) => s.document.uri.toString() === key);
+    if (open.length === 0) this.focus.set(key, nodeId);
+    for (const s of open) s.focusNode(nodeId);
+    await vscode.commands.executeCommand('vscode.openWith', uri, BOARD_VIEW_TYPE, { viewColumn: vscode.ViewColumn.Active });
+  }
+
   resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): void {
-    const session = new BoardSession(document, panel, this.extensionUri, (s) => this.active.delete(s));
+    const key = document.uri.toString();
+    const focus = this.focus.get(key);
+    this.focus.delete(key);
+    const session = new BoardSession(document, panel, this.extensionUri, (s) => this.active.delete(s), this.openTodo, focus);
     this.active.add(session);
   }
 }

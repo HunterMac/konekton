@@ -23,7 +23,7 @@ export function etagOf(content: string | Buffer): string {
   return `"${createHash('sha256').update(content).digest('hex')}"`;
 }
 
-function code(err: unknown): string | undefined {
+export function code(err: unknown): string | undefined {
   return typeof err === 'object' && err !== null && 'code' in err ? String((err as { code: unknown }).code) : undefined;
 }
 
@@ -43,6 +43,64 @@ export async function seedBoards(boardsDir: string, fixturesDir: string): Promis
     if (entry.isFile() && isBoardName(entry.name)) await copyFile(path.join(fixturesDir, entry.name), path.join(boardsDir, entry.name));
   }
   return true;
+}
+
+/** Write a temp file in the same folder, flush it, then rename it over the target. */
+export async function atomicWrite(full: string, text: string): Promise<void> {
+  const tmp = `${full}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    const handle = await open(tmp, 'wx');
+    try {
+      await handle.writeFile(text, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, full);
+  } catch (err) {
+    await unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Write the full file under a name that must not exist; throws `exists()` when it does. A hard link from a finished
+ * temp file fails if the name exists, so the file never appears half written. File systems without hard links
+ * reserve the name with `wx` first.
+ */
+export async function createExclusive(full: string, text: string, exists: () => Error): Promise<void> {
+  const tmp = `${full}.${randomBytes(6).toString('hex')}.tmp`;
+  const handle = await open(tmp, 'wx');
+  try {
+    try {
+      await handle.writeFile(text, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await link(tmp, full);
+  } catch (err) {
+    if (code(err) === 'EEXIST') throw exists();
+    if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(code(err) ?? '')) throw err;
+    await reserveThenWrite(full, text, exists);
+  } finally {
+    await unlink(tmp).catch(() => {});
+  }
+}
+
+async function reserveThenWrite(full: string, text: string, exists: () => Error): Promise<void> {
+  try {
+    await (await open(full, 'wx')).close();
+  } catch (err) {
+    if (code(err) === 'EEXIST') throw exists();
+    throw err;
+  }
+  try {
+    await atomicWrite(full, text);
+  } catch (err) {
+    await unlink(full).catch(() => {});
+    throw err;
+  }
 }
 
 /** The `.canvas` files directly inside one folder. Every name is checked; nothing outside the folder is read or written. */
@@ -91,24 +149,6 @@ export class BoardFiles {
     return next;
   }
 
-  /** Write a temp file in the same folder, flush it, then rename it over the target. */
-  private async atomicWrite(full: string, text: string): Promise<void> {
-    const tmp = `${full}.${randomBytes(6).toString('hex')}.tmp`;
-    try {
-      const handle = await open(tmp, 'wx');
-      try {
-        await handle.writeFile(text, 'utf8');
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(tmp, full);
-    } catch (err) {
-      await unlink(tmp).catch(() => {});
-      throw err;
-    }
-  }
-
   private checkSize(text: string): void {
     if (Buffer.byteLength(text, 'utf8') > MAX_BOARD_BYTES) throw new BoardError(413, 'Board too large');
   }
@@ -147,7 +187,7 @@ export class BoardFiles {
       const next = etagOf(text);
       // Before the rename, so the watcher event of this write is already known as our own.
       this.lastWritten.set(name, next);
-      await this.atomicWrite(full, text);
+      await atomicWrite(full, text);
       return next;
     });
   }
@@ -160,48 +200,9 @@ export class BoardFiles {
       if (exists) throw new BoardError(409, `A board named ${name} already exists`);
       const etag = etagOf(text);
       this.lastWritten.set(name, etag);
-      await this.createExclusive(full, name, text);
+      await createExclusive(full, text, () => new BoardError(409, `A board named ${name} already exists`));
       return { name, etag };
     });
-  }
-
-  /**
-   * Write the full file under a name that must not exist. A hard link from a finished temp file fails if the name
-   * exists, so the board never appears half written. File systems without hard links reserve the name with `wx` first.
-   */
-  private async createExclusive(full: string, name: string, text: string): Promise<void> {
-    const tmp = `${full}.${randomBytes(6).toString('hex')}.tmp`;
-    const handle = await open(tmp, 'wx');
-    try {
-      try {
-        await handle.writeFile(text, 'utf8');
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await link(tmp, full);
-    } catch (err) {
-      if (code(err) === 'EEXIST') throw new BoardError(409, `A board named ${name} already exists`);
-      if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(code(err) ?? '')) throw err;
-      await this.reserveThenWrite(full, name, text);
-    } finally {
-      await unlink(tmp).catch(() => {});
-    }
-  }
-
-  private async reserveThenWrite(full: string, name: string, text: string): Promise<void> {
-    try {
-      await (await open(full, 'wx')).close();
-    } catch (err) {
-      if (code(err) === 'EEXIST') throw new BoardError(409, `A board named ${name} already exists`);
-      throw err;
-    }
-    try {
-      await this.atomicWrite(full, text);
-    } catch (err) {
-      await unlink(full).catch(() => {});
-      throw err;
-    }
   }
 
   /** Write a copy under the first free `<name>_web.canvas`, `<name>_web-2.canvas`, … */
