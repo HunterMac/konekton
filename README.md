@@ -6,7 +6,7 @@ Open any `.canvas` file and get a Miro-like board: place sticky notes, rectangle
 
 ## Features
 
-On a virtual board (with grid toggle) you can place multiple objects:
+On a virtual board you can place multiple objects:
 
 - **Sticky notes** – coloured, square notes, just like in Miro.
 - **Rectangles** – an optional bold title plus body text.
