@@ -10,9 +10,13 @@ const boardsDir = path.resolve(process.env.KONEKTON_BOARDS ?? path.join(repo, 'b
 
 // Web version for testing: `npm run dev`. The extension build has its own config (webview/vite.config.mts).
 export default defineConfig({
+  // `/konekton/` on GitHub Pages (set by the deploy workflow); `/` for `npm run dev`.
+  base: process.env.KONEKTON_BASE ?? '/',
   root: fileURLToPath(new URL('.', import.meta.url)),
   // Next to the extension build's cache, not in web/node_modules.
   cacheDir: path.join(repo, 'node_modules/.vite/web'),
+  build: { outDir: path.join(repo, 'dist-web'), emptyOutDir: true },
+  // boardsPlugin only serves (`apply: 'serve'`), so it is not in the build.
   plugins: [react(), boardsPlugin({ boardsDir, fixturesDir: path.join(repo, 'test/fixtures') })],
   server: {
     // Never `cors: true` or `allowedHosts: true`, and never `--host`: the board endpoints read and write files.

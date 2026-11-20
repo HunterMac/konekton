@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { FileResponse } from '../../shared/api';
 import type { FileStore } from '../ports/types';
+import { homeHref } from '../routes';
 
 /** "Open in editor" for a file reference in the web version: the file's text, read-only, updated when it changes. */
 export function RawFile({ files, path }: { files: FileStore; path: string }) {
@@ -21,7 +22,7 @@ export function RawFile({ files, path }: { files: FileStore; path: string }) {
     <main className="kw-page kw-raw">
       <h1>{path}</h1>
       <p>
-        <a href="/">Boards</a>
+        <a href={homeHref()}>Boards</a>
       </p>
       {state.status === 'loading' && <p>Loading…</p>}
       {state.status === 'missing' && <p className="kw-note">File not found: {path}</p>}

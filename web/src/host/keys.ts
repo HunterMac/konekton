@@ -7,9 +7,10 @@ function isTextTarget(target: EventTarget | null): boolean {
 
 /**
  * Keys VS Code handles for the extension: undo/redo and save. Also asks before the tab closes with unsaved changes.
+ * `afterSave` runs after Ctrl/Cmd+S has saved (Drive mode: sync at once).
  * Returns a function that removes the listeners.
  */
-export function installKeys(doc: WebDocument): () => void {
+export function installKeys(doc: WebDocument, afterSave?: () => void): () => void {
   // Bubble phase: text fields stop Ctrl/Cmd+Z/Y themselves (keepNativeUndo) and keep their own text undo.
   const onUndoKeys = (e: KeyboardEvent) => {
     if (e.defaultPrevented || isTextTarget(e.target)) return;
@@ -28,7 +29,7 @@ export function installKeys(doc: WebDocument): () => void {
   const onSave = (e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
-      void doc.saveNow();
+      void doc.saveNow().then(afterSave);
     }
   };
   const onBeforeUnload = (e: BeforeUnloadEvent) => {

@@ -36,7 +36,7 @@ export function entriesFor(filter: Filter, boards: BoardInfo[], paths: string[])
 }
 
 /** Start page: the boards and the todo lists in the boards folder, with tabs All / Canvas / Todo, and "New board". */
-export function BoardList({ storage, files, dialogs, note }: { storage: BoardStorage; files: FileStore; dialogs: Dialogs; note?: string }) {
+export function BoardList({ storage, files, dialogs, note, emptyHint }: { storage: BoardStorage; files: FileStore; dialogs: Dialogs; note?: string; emptyHint?: string }) {
   const [boards, setBoards] = useState<BoardInfo[] | null>(null);
   const [paths, setPaths] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +117,7 @@ export function BoardList({ storage, files, dialogs, note }: { storage: BoardSto
           New board
         </button>
       </div>
-      {loaded && entries.length === 0 && <p>{EMPTY[filter]}</p>}
+      {loaded && entries.length === 0 && <p>{emptyHint ?? EMPTY[filter]}</p>}
       {entries.length > 0 && (
         <ul className="kw-boards">
           {entries.map((e) =>

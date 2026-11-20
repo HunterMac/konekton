@@ -140,6 +140,22 @@ export class FakeDialogs implements Dialogs {
     });
   }
 
+  readonly removals: string[] = [];
+  private pendingRemoved: ((answer: 'write' | 'delete') => void) | undefined;
+
+  askRemoved(path: string): Promise<'write' | 'delete'> {
+    this.removals.push(path);
+    return new Promise((resolve) => {
+      this.pendingRemoved = resolve;
+    });
+  }
+
+  answerRemoved(choice: 'write' | 'delete'): void {
+    const resolve = this.pendingRemoved;
+    this.pendingRemoved = undefined;
+    resolve?.(choice);
+  }
+
   get asking(): boolean {
     return this.pending !== undefined;
   }

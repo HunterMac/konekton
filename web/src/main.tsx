@@ -14,16 +14,30 @@ import { createBrowserEnv } from './ports/browserEnv';
 import { BrowserDialogs, DialogHost } from './ports/browserDialogs';
 import { createBrowserSettings } from './ports/browserSettings';
 import { createDevServerFiles, createDevServerStorage } from './ports/devServerStorage';
+import type { BoardStorage, FileStore } from './ports/types';
 import { SessionViewState } from './ports/sessionViewState';
-import { boardHref } from './routes';
+import { boardHref, goneHref, homeHref } from './routes';
+import { startDriveMode, type DriveMode } from './sync/setup';
+import { SyncBadge } from './ui/SyncBadge';
 import { isTodoPath } from '../../src/shared/todoFormat';
 import './web.css';
 
 const rootEl = document.getElementById('root') as HTMLElement;
 const uiEl = document.getElementById('web-ui') as HTMLElement;
-const storage = createDevServerStorage();
-const files = createDevServerFiles();
-const dialogs = new BrowserDialogs();
+// Set by `boot()` before the first page is shown.
+let storage!: BoardStorage;
+let files!: FileStore;
+/** Only in Drive mode: local copy plus Google Drive sync. */
+let drive: DriveMode | undefined;
+/** The board that is open on this page. */
+let currentBoard: string | undefined;
+
+/** `npm run dev` keeps the dev server's boards folder; a build and `VITE_KONEKTON_STORAGE=drive` use the local copy and Drive. */
+const useDrive = import.meta.env.VITE_KONEKTON_STORAGE === 'drive' || (import.meta.env.PROD && import.meta.env.VITE_KONEKTON_STORAGE !== 'devserver');
+const dialogs = new BrowserDialogs(useDrive ? 'Drive' : 'the server');
+
+/** The sync badge, top right (Drive mode only). */
+const badge = (): ReactNode => (drive ? <SyncBadge sync={drive.sync} auth={drive.auth} onSignIn={drive.signIn} onSignOut={drive.signOut} /> : null);
 
 const titleFor = (name: string) => `${name} – Konekton`;
 
@@ -34,13 +48,21 @@ function render(el: HTMLElement, node: ReactNode): void {
 function showStartPage(note?: string): void {
   document.body.classList.add('kw-scroll');
   document.title = 'Konekton boards';
+  const signedOut = drive?.auth.state().kind === 'signedOut';
   render(
     rootEl,
     <>
-      <BoardList storage={storage} files={files} dialogs={dialogs} note={note} />
+      <BoardList
+        storage={storage}
+        files={files}
+        dialogs={dialogs}
+        note={note}
+        emptyHint={signedOut ? 'Sign in with Google to see your boards from Drive. Boards made now stay in this browser until you sign in.' : undefined}
+      />
       <DialogHost dialogs={dialogs} />
     </>,
   );
+  render(uiEl, badge());
 }
 
 async function openBoard(name: string): Promise<void> {
@@ -52,12 +74,13 @@ async function openBoard(name: string): Promise<void> {
     return;
   }
   if (!loaded) {
-    history.replaceState(null, '', '/');
+    history.replaceState(null, '', homeHref());
     showStartPage(`Board not found: ${name}`);
     return;
   }
 
   document.title = titleFor(name);
+  currentBoard = name;
   const viewState = new SessionViewState(name);
   // Set right after bootstrap; the host needs it before then only in theory.
   const board: { store?: BoardStore } = {};
@@ -75,21 +98,23 @@ async function openBoard(name: string): Promise<void> {
     },
     renamed(next) {
       viewState.rename(next);
+      currentBoard = next;
       history.replaceState(null, '', boardHref(next));
       document.title = titleFor(next);
     },
     gone(gone) {
-      window.location.assign(`/?gone=${encodeURIComponent(gone)}`);
+      window.location.assign(goneHref(gone));
     },
   });
   board.store = bootstrap(host, rootEl, { fileReferences: true, todoFullscreen: true });
-  installKeys(host.doc);
+  installKeys(host.doc, drive ? () => drive?.sync.syncNow() : undefined);
   render(
     uiEl,
     <>
-      <a className="kw-boards-link" href="/">
+      <a className="kw-boards-link" href={homeHref()}>
         Boards
       </a>
+      {badge()}
       <DialogHost dialogs={dialogs} />
     </>,
   );
@@ -110,7 +135,13 @@ function openTodo(path: string, from: string | undefined): void {
     },
   });
   bootstrapTodo(host, rootEl);
-  render(uiEl, <DialogHost dialogs={dialogs} />);
+  render(
+    uiEl,
+    <>
+      {badge()}
+      <DialogHost dialogs={dialogs} />
+    </>,
+  );
 }
 
 function start(): void {
@@ -118,7 +149,7 @@ function start(): void {
   const todo = params.get('todo');
   if (todo !== null) {
     if (!isTodoPath(todo)) {
-      history.replaceState(null, '', '/');
+      history.replaceState(null, '', homeHref());
       showStartPage(`Not a todo file: ${todo}`);
       return;
     }
@@ -131,17 +162,18 @@ function start(): void {
     document.body.classList.add('kw-scroll');
     document.title = `${file} – Konekton`;
     render(rootEl, <RawFile files={files} path={file} />);
+    render(uiEl, badge());
     return;
   }
   const board = params.get('board');
   if (board === null) {
     const gone = params.get('gone');
-    if (gone !== null) history.replaceState(null, '', '/');
-    showStartPage(gone !== null ? 'The board was deleted on the server.' : undefined);
+    if (gone !== null) history.replaceState(null, '', homeHref());
+    showStartPage(gone !== null ? (drive ? `${gone} was removed on Drive.` : 'The board was deleted on the server.') : undefined);
     return;
   }
   if (!isBoardName(board)) {
-    history.replaceState(null, '', '/');
+    history.replaceState(null, '', homeHref());
     showStartPage(`Not a board name: ${board}`);
     return;
   }
@@ -149,9 +181,36 @@ function start(): void {
     document.body.classList.add('kw-scroll');
     document.title = `${board} (text) – Konekton`;
     render(rootEl, <RawBoard storage={storage} name={board} />);
+    render(uiEl, badge());
     return;
   }
   void openBoard(board);
 }
 
-start();
+async function boot(): Promise<void> {
+  if (useDrive) {
+    try {
+      drive = await startDriveMode(dialogs, {
+        savedAsCopy(original, copy) {
+          if (currentBoard === original) window.location.assign(boardHref(copy));
+        },
+      });
+    } catch (err) {
+      rootEl.textContent = `Cannot open the local storage of this browser: ${err instanceof Error ? err.message : String(err)}`;
+      return;
+    }
+    storage = drive.storage;
+    files = drive.files;
+    const focus = () => drive?.sync.onFocus();
+    window.addEventListener('focus', focus);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') focus();
+    });
+  } else {
+    storage = createDevServerStorage();
+    files = createDevServerFiles();
+  }
+  start();
+}
+
+void boot();

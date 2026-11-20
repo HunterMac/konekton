@@ -61,6 +61,8 @@ export interface Dialogs {
   notify(message: string): void;
   /** Required choice after an outside change while there are unsaved changes. */
   askConflict(name: string, copyName: string): Promise<'reload' | 'saveAs'>;
+  /** Required choice after a synced file disappeared from Drive. */
+  askRemoved(path: string): Promise<'write' | 'delete'>;
 }
 
 export interface Settings {

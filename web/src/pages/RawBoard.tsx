@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { parse } from '../../../src/shared/canvasFormat';
 import type { BoardStorage } from '../ports/types';
-import { boardHref } from '../routes';
+import { boardHref, homeHref } from '../routes';
 
 type RawState =
   | { kind: 'loading' }
@@ -38,7 +38,7 @@ export function RawBoard({ storage, name }: { storage: BoardStorage; name: strin
     <main className="kw-page kw-raw">
       <h1>{name}</h1>
       <p>
-        <a href="/">Boards</a>
+        <a href={homeHref()}>Boards</a>
       </p>
       {state.kind === 'loading' && <p>Loading…</p>}
       {state.kind === 'missing' && <p className="kw-note">Board not found: {name}</p>}

@@ -153,3 +153,6 @@ vite.config.ts.timestamp-*
 
 # Web version: boards folder (filled from test/fixtures on the first `npm run dev`)
 boards/
+
+# Web version build for GitHub Pages
+dist-web/

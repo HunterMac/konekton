@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Web version on GitHub Pages with Google Drive sync: sign in with Google; boards and the text files they use live in the folder `konekton` of your Drive (scope `drive.file`); a working copy in the browser (IndexedDB) also works signed out; changes sync within 15 s, outside changes are fetched on open and on focus; a badge shows Synced / Not synced.
 - Todo lists: a file reference to a `*.todo.md` file shows it as a todo list, with a **Todo / Text** switch. Tasks are GitHub checklist items with visible `#tag @person !date ~estimate` tokens and hidden data in an HTML comment (see `goals/todo/TODO-FORMAT.md`). Details open per task; subtasks, repeats, links between tasks, keyboard editing, drag and drop and undo are supported. New lists from the checklist tool or the line chooser.
 - Todo lists have a **Board** mode: the list's top-level tasks as cards in Todo / In progress / Done lanes, per object, separate from the board-wide views.
 - Todo lists have a **Timeline** mode, after Board: top-level tasks as cards under the Days / Weeks / Months segment of their due date, with an Unscheduled area. Drag a card to change its due date.

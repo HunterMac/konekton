@@ -2,7 +2,7 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'out/**', 'node_modules/**', '.vscode-test/**'] },
+  { ignores: ['dist/**', 'dist-web/**', 'out/**', 'node_modules/**', '.vscode-test/**'] },
   ...tseslint.configs.recommended,
   {
     files: ['webview/src/**/*.{ts,tsx}', 'web/src/**/*.{ts,tsx}'],

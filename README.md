@@ -115,6 +115,18 @@ You can drag files from the VS Code Explorer onto the board. VS Code only delive
 
 There is no "New Board" command in this version. Create an empty file with the `.canvas` extension (for example `ideas.canvas`) and open it. An empty file is a valid empty board. To see the raw JSON, use **Reopen Editor With… → Text Editor**.
 
+## Web version on GitHub Pages
+
+The same web app runs as a static site at `https://huntermac.github.io/konekton/`. Boards live in your own Google Drive.
+
+- **Sign in with Google.** The app asks only for the `drive.file` scope: it sees the files and folders it made itself, nothing else in your Drive.
+- Your files are in the Drive folder `konekton` (in My Drive). Boards are `<name>.canvas` there; the text files and todo lists the boards use sit next to them, in the same relative paths. The app makes the folder on first use. Files you add to the folder by hand in Drive are not shown, and a `konekton` folder made by hand is not used (the app makes its own).
+- A working copy of every file is kept in the browser (IndexedDB), so the app also works signed out and after a reload. Signed out, boards stay in this browser; at sign-in they upload to the account.
+- **What syncs when.** A change goes to Drive at once if nothing was synced for 15 seconds, otherwise 15 seconds after the last sync. Ctrl/Cmd+S syncs at once. A sync overwrites the Drive file; it does not look at Drive first. Outside changes (another browser, Drive) are fetched when the page opens and when the tab gets focus, at most every 5 minutes. If a file changed on Drive while you have unsynced changes, the app asks: **Reload from Drive** or **Save my version as `<name>_web.canvas`**. A synced file that was deleted, trashed or moved out of `konekton` on Drive: the app asks whether to write it again or delete your local copy.
+- **The badge** (top right) says **Synced**, or **Not synced** with the reason (signed out, waiting, syncing, a question is open, offline or another error) and the button for it. A Google token lasts about an hour; after that the next click or key press renews it. If the browser blocks the Google window, a **Reconnect** button shows.
+- Only one tab per browser syncs; the others show its status.
+- **Clearing the site data of the browser loses changes that are not synced yet.** Local copies are kept per Google account and stay after sign-out.
+
 ## Settings
 
 | Setting | Default | Description |
@@ -189,6 +201,19 @@ npm run dev            # then open the printed address (default http://localhost
 - If outside changes are not seen (network drives, `/mnt/c` in WSL), try `CHOKIDAR_USEPOLLING=1 npm run dev`.
 - The code: `web/server` (Vite plugin: board endpoints, request checks, file watching), `web/src/host` (`WebHost` answers the same messages as the extension's `BoardSession`), `web/src/ports` (storage, clipboard and tabs, dialogs, settings, view state – swap one to change where a feature comes from). The board UI is shared through `webview/src/bootstrap.tsx`.
 
+#### Drive mode (Google sign-in) in development
+
+```sh
+VITE_KONEKTON_STORAGE=drive VITE_GOOGLE_CLIENT_ID=<client id> npm run dev   # http://localhost:5173
+npm run build:web                                                            # static site into dist-web/
+KONEKTON_BASE=/konekton/ VITE_GOOGLE_CLIENT_ID=<client id> npm run build:web  # as on GitHub Pages
+```
+
+- Without `VITE_KONEKTON_STORAGE`, `npm run dev` keeps the dev-server storage. A production build uses Drive mode (`VITE_KONEKTON_STORAGE=devserver` turns it off).
+- Google Cloud setup (once, free, no billing account needed; if Google asks for a card, stop): create a project, enable the **Google Drive API**, configure the OAuth consent screen (External, scope `https://www.googleapis.com/auth/drive.file`, publishing status "In production"), create an OAuth client of type **Web application** with the authorized JavaScript origins `https://huntermac.github.io` and `http://localhost:5173`. The client ID is public by design.
+- GitHub: repository settings, Pages source **GitHub Actions**; Actions variable `GOOGLE_CLIENT_ID` with the client ID. `.github/workflows/pages.yml` builds and deploys on every push to `main`.
+- The code: `web/src/sync` (`localStore` and `localPorts`: the working copy behind the same ports as the dev server; `googleAuth`; `driveApi` and `driveTree`; `syncEngine`; `syncCoordinator`: one syncing tab), `web/src/ui/SyncBadge.tsx`.
+
 
 ### Manual test checklist
 
@@ -245,3 +270,23 @@ Run with `npm run dev` in Chrome and Firefox.
 - [ ] Close the tab within 300 ms of a change: the browser asks first.
 - [ ] `KONEKTON_BOARDS=/tmp/kb npm run dev` uses that folder.
 - [ ] `npm run build` and the VS Code extension still work.
+
+### Remote files checklist
+
+Run on `VITE_KONEKTON_STORAGE=drive npm run dev` with two browser profiles A and B signed in to the same Google account, and once on the deployed site, in Chrome and Firefox.
+
+- [ ] Signed out: create a board and a todo file; reload; both are there; badge "Not synced · Signed out".
+- [ ] Sign in: Google's window once; the signed-out board uploads; Drive shows `konekton/<board>.canvas`; badge "Synced".
+- [ ] Edit a board: the badge shows "Not synced" and turns "Synced" within about 15 s; several edits within 15 s give at most one upload at once and one 15 s later (network panel).
+- [ ] Ctrl/Cmd+S uploads at once.
+- [ ] Profile B: the board appears on open. Edit in A, wait for "Synced", focus B after 5 minutes: B shows the change ("Reloaded").
+- [ ] Edit in B without waiting for sync, change the same board in A and sync, focus B after 5 minutes: the Reload / Save as copy question. "Save my version" opens `<name>_web.canvas`, which then appears in Drive.
+- [ ] Delete a synced file in Drive (and separately: move one out of `konekton`): on refresh the "removed on Drive" question. "Write it again" restores it in Drive; "Delete my copy" removes it locally; an open board goes to the start page with the note.
+- [ ] Two files with the same path (create the same new board in A and B while offline, then go online): warning, newest used.
+- [ ] A `konekton` folder made by hand in a fresh Google account: the app makes its own second `konekton` (accepted limit).
+- [ ] Wait until the token ends (about 1 hour): status "Click or type to reconnect"; the next key press renews it (or the Reconnect button shows in a browser that blocks the window).
+- [ ] Two tabs in one profile: only one uploads; both badges agree.
+- [ ] Offline: badge shows Offline; edits keep saving locally; back online they upload.
+- [ ] Sign out: the app shows the signed-out space; signing in again shows the account's boards.
+- [ ] `npm run dev` without variables works as before (dev-server storage, outside changes from VS Code).
+- [ ] Deployed site: all links stay under `/konekton/`; sign-in works from that origin.
