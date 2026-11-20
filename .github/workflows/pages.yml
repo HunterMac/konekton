@@ -17,11 +17,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,5 +33,14 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist-web
+
+  # A job of its own: in the same job, deploy-pages sometimes looks before the artifact is listed ("No artifacts named github-pages").
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
