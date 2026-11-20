@@ -22,8 +22,8 @@ class FakeTarget {
   removeEventListener(type: string, fn: () => void) {
     this.handlers.get(type)?.delete(fn);
   }
-  fire(type: string) {
-    for (const fn of [...(this.handlers.get(type) ?? [])]) fn();
+  fire(type: string, event?: Event) {
+    for (const fn of [...(this.handlers.get(type) ?? [])]) (fn as (e?: Event) => void)(event);
   }
   count(): number {
     return [...this.handlers.values()].reduce((sum, s) => sum + s.size, 0);
@@ -129,6 +129,25 @@ describe('GoogleAuth', () => {
     a.target.fire('keydown');
     expect(a.requests).toEqual([{ prompt: '', login_hint: 'me@example.com' }]);
     expect(a.target.count()).toBe(0);
+  });
+
+  it('a click on a [data-no-reconnect] element (Sign out) does not open the Google window', () => {
+    const a = setup({ hint: 'me@example.com' });
+    const inside = { closest: (sel: string) => (sel === '[data-no-reconnect]' ? {} : null) };
+    const ElementLike = class {};
+    Object.setPrototypeOf(inside, ElementLike.prototype);
+    const g = globalThis as { Element?: unknown };
+    const had = g.Element;
+    g.Element = ElementLike;
+    try {
+      a.target.fire('pointerdown', { target: inside } as unknown as Event);
+      expect(a.requests).toEqual([]);
+      expect(a.target.count()).toBe(2);
+      a.target.fire('pointerdown');
+      expect(a.requests).toHaveLength(1);
+    } finally {
+      g.Element = had;
+    }
   });
 
   it('a popup that failed to open needs a reconnect', () => {

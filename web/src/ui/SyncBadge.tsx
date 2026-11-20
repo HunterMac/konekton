@@ -46,7 +46,6 @@ export function SyncBadge(props: Props) {
   const [status, setStatus] = useState<SyncStatus>(() => sync.status());
   // Re-render when the sign-in changes (a closed sign-in window does not change the sync status).
   const [, setAuthTick] = useState(0);
-  const [menu, setMenu] = useState(false);
 
   useEffect(() => {
     setStatus(sync.status());
@@ -62,10 +61,10 @@ export function SyncBadge(props: Props) {
   const synced = status.kind === 'synced';
   // Nothing local to send while Drive is read: no warning colour.
   const calm = synced || (status.kind === 'notSynced' && status.detail === 'checking');
-  const email = (() => {
-    const s = props.auth.state();
-    return s.kind === 'signedIn' ? s.email : undefined;
-  })();
+  const authState = props.auth.state();
+  const email = authState.kind === 'signedIn' ? authState.email : undefined;
+  // Also while reconnecting or after an error: the person may want to leave this account.
+  const signedIn = authState.kind !== 'signedOut';
 
   return (
     <div className={`eb-chip-bar kw-sync ${calm ? 'kw-sync-ok' : 'kw-sync-pending'}`}>
@@ -77,25 +76,10 @@ export function SyncBadge(props: Props) {
           {view.action.label}
         </button>
       )}
-      {synced && (
-        <button type="button" className="eb-chip" aria-expanded={menu} onClick={() => setMenu(!menu)}>
-          Account
+      {signedIn && (
+        <button type="button" className="eb-chip" data-no-reconnect title={email ? `Signed in as ${email}` : undefined} onClick={props.onSignOut}>
+          Sign out
         </button>
-      )}
-      {menu && (
-        <div className="kw-sync-menu">
-          {email && <div>{email}</div>}
-          <button
-            type="button"
-            className="eb-chip"
-            onClick={() => {
-              setMenu(false);
-              props.onSignOut();
-            }}
-          >
-            Sign out
-          </button>
-        </div>
       )}
     </div>
   );

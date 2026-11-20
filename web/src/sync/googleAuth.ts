@@ -19,8 +19,8 @@ interface StorageLike {
 }
 
 interface EventTargetLike {
-  addEventListener(type: string, listener: () => void, capture?: boolean): void;
-  removeEventListener(type: string, listener: () => void, capture?: boolean): void;
+  addEventListener(type: string, listener: (e?: Event) => void, capture?: boolean): void;
+  removeEventListener(type: string, listener: (e?: Event) => void, capture?: boolean): void;
 }
 
 export interface GoogleAuthDeps {
@@ -262,7 +262,10 @@ export class GoogleAuth {
     this.set({ kind: 'needsGesture' });
   }
 
-  private readonly onGesture = (): void => {
+  private readonly onGesture = (e?: Event): void => {
+    // "Sign out" and the like must not open the Google window first.
+    const target = e?.target;
+    if (typeof Element !== 'undefined' && target instanceof Element && target.closest('[data-no-reconnect]')) return;
     this.stopGestureListening();
     // Synchronous, inside the event handler: the popup needs its user activation.
     this.request('');
