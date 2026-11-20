@@ -133,6 +133,11 @@ export class GoogleAuth {
       this.set({ kind: 'needsReconnect', reason: r.error_description ?? r.error ?? 'Sign-in failed.' });
       return;
     }
+    // Google's consent screen lets the person untick Drive; the token then works for nothing here.
+    if (r.scope !== undefined && !r.scope.split(' ').includes(DRIVE_SCOPE)) {
+      this.set({ kind: 'needsReconnect', reason: 'Google Drive access was not allowed. Sign in again and tick the Google Drive box.' });
+      return;
+    }
     const expiresAt = this.deps.now() + (r.expires_in ?? 3600) * 1000;
     try {
       this.deps.storage.setItem(TOKEN_KEY, JSON.stringify({ token: r.access_token, expiresAt }));
@@ -186,6 +191,17 @@ export class GoogleAuth {
     if (this.current.kind === 'signedIn' && this.current.token === token) return;
     if (this.deps.now() >= expiresAt - MARGIN_MS) return;
     this.onToken({ access_token: token, expires_in: (expiresAt - this.deps.now()) / 1000 });
+  }
+
+  /** Signed in, but Drive cannot be used (refused, not enabled, ...): forget the token and show why. */
+  failed(reason: string): void {
+    try {
+      this.deps.storage.removeItem(TOKEN_KEY);
+    } catch {
+      // Nothing to forget.
+    }
+    this.stopGestureListening();
+    this.set({ kind: 'needsReconnect', reason });
   }
 
   /** Drive answered 401: forget the token, move to `needsGesture`. */

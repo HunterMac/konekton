@@ -70,6 +70,27 @@ describe('GoogleAuth', () => {
     expect(b.auth.token()).toBe('T1');
   });
 
+  it('a token without the Drive scope (box unticked) needs a reconnect and is not kept', () => {
+    const a = setup();
+    a.auth.signIn();
+    a.cfg.callback?.({ access_token: 'T1', expires_in: 3600, scope: 'openid email' });
+    expect(a.auth.state()).toMatchObject({ kind: 'needsReconnect' });
+    expect(a.auth.token()).toBeUndefined();
+    expect(a.storage.getItem('konekton.google.token')).toBeNull();
+    a.auth.signIn();
+    a.cfg.callback?.({ access_token: 'T2', expires_in: 3600, scope: 'https://www.googleapis.com/auth/drive.file' });
+    expect(a.auth.token()).toBe('T2');
+  });
+
+  it('failed() drops the token and shows the reason', () => {
+    const a = setup();
+    a.auth.signIn();
+    a.cfg.callback?.({ access_token: 'T1', expires_in: 3600 });
+    a.auth.failed('Signed in, but Drive refused: x');
+    expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'Signed in, but Drive refused: x' });
+    expect(a.auth.token()).toBeUndefined();
+  });
+
   it('counts the token as ended 60 s early and then waits for a gesture', () => {
     const a = setup();
     a.auth.signIn();

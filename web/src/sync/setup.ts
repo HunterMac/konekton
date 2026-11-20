@@ -1,6 +1,6 @@
 import { BrowserDialogs } from '../ports/browserDialogs';
 import type { BoardStorage, FileStore } from '../ports/types';
-import { HttpDriveApi } from './driveApi';
+import { AuthError, HttpDriveApi } from './driveApi';
 import { GoogleAuth, type AuthState } from './googleAuth';
 import { openIndexedDb } from './kv';
 import { moveEntries } from './localMove';
@@ -96,8 +96,10 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
       localStorage.setItem(SPACE_KEY, about.permissionId);
       coordinator.reloadOthers();
       reload();
-    } catch {
-      // Offline or refused: the engine shows the problem; the next sign-in tries again.
+    } catch (err) {
+      // A 401 already moved `auth` on. Offline: the next sign-in or reload tries again.
+      // Anything else would leave the page signed in but unsynced without a word, so the badge shows it.
+      if (!(err instanceof AuthError) && !(err instanceof TypeError)) auth.failed(`Signed in, but Drive refused: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       identifying = false;
     }
