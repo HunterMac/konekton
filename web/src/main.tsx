@@ -162,7 +162,13 @@ function start(): void {
     document.body.classList.add('kw-scroll');
     document.title = `${file} – Konekton`;
     render(rootEl, <RawFile files={files} path={file} />);
-    render(uiEl, badge());
+    render(
+      uiEl,
+      <>
+        {badge()}
+        <DialogHost dialogs={dialogs} />
+      </>,
+    );
     return;
   }
   const board = params.get('board');
@@ -181,7 +187,13 @@ function start(): void {
     document.body.classList.add('kw-scroll');
     document.title = `${board} (text) – Konekton`;
     render(rootEl, <RawBoard storage={storage} name={board} />);
-    render(uiEl, badge());
+    render(
+      uiEl,
+      <>
+        {badge()}
+        <DialogHost dialogs={dialogs} />
+      </>,
+    );
     return;
   }
   void openBoard(board);

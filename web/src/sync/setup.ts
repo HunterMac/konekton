@@ -1,9 +1,11 @@
 import { BrowserDialogs } from '../ports/browserDialogs';
 import type { BoardStorage, FileStore } from '../ports/types';
+import { AccountGate } from './accountGate';
 import { AuthError, HttpDriveApi } from './driveApi';
 import { GoogleAuth, type AuthState } from './googleAuth';
 import { openIndexedDb } from './kv';
 import { moveEntries } from './localMove';
+import { SharedDialogs } from './sharedDialogs';
 import { createLocalFiles, createLocalStorage } from './localPorts';
 import { broadcastChannel, LocalStore } from './localStore';
 import { SyncCoordinator } from './syncCoordinator';
@@ -35,26 +37,39 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
   // A variable pasted with a line break gives "Error 401: invalid_client".
   const clientId = (import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '').trim();
   const auth = new GoogleAuth(clientId);
-  const drive = new HttpDriveApi(auth);
   const reload = () => window.location.reload();
+  /** `about` with exactly this token: the current token may change while the call runs. */
+  const aboutWith = (token: string) =>
+    new HttpDriveApi({
+      token: () => token,
+      rejected: () => {
+        const s = auth.state();
+        if (s.kind === 'signedIn' && s.token === token) auth.rejected();
+      },
+    }).about();
 
   // Which space? Signed out: `local`. Otherwise the account of the last sign-in.
   let space = LOCAL_SPACE;
+  /** The token whose account picked the space below. */
+  let checkedToken: string | undefined;
   if (auth.state().kind === 'signedOut') {
     localStorage.removeItem(SPACE_KEY);
   } else {
     let key = localStorage.getItem(SPACE_KEY);
-    if (!key && auth.state().kind === 'signedIn') {
+    const s = auth.state();
+    if (!key && s.kind === 'signedIn') {
       // Signed in on Google's page: the page loads signed in, so the signed-out files move here.
       try {
-        const about = await drive.about();
+        const about = await aboutWith(s.token);
         key = about.permissionId;
+        checkedToken = s.token;
         const notes = await moveEntries(await openStore(LOCAL_SPACE, false), await openStore(key, false));
         if (notes.length > 0) sessionStorage.setItem(NOTE_KEY, notes.join(' '));
         localStorage.setItem(SPACE_KEY, key);
         if (about.emailAddress) auth.setEmail(about.emailAddress);
       } catch {
         key = null;
+        checkedToken = undefined;
       }
     }
     if (key) space = key;
@@ -69,38 +84,74 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
   const store = await openStore(space, true);
   // The `local` space never syncs: it moves into the account's space at sign-in.
   const signedOutView = { state: (): AuthState => ({ kind: 'signedOut' }), onChange: () => () => undefined };
+  // The engine reads and writes Drive only with a token Drive confirmed for this space's account.
+  const gate = new AccountGate(auth);
+  if (checkedToken !== undefined) gate.confirm(checkedToken);
+  // The engine runs in one tab; its questions show in every tab of the space.
+  const shared = new SharedDialogs(dialogs, broadcastChannel(`konekton-questions:${space}`), { savedAsCopy: hooks.savedAsCopy });
   const engine = new SyncEngine({
     store,
-    drive,
-    auth: space === LOCAL_SPACE ? signedOutView : auth,
-    dialogs,
+    drive: new HttpDriveApi(gate),
+    auth: space === LOCAL_SPACE ? signedOutView : gate,
+    dialogs: shared,
     now: () => Date.now(),
     setTimer: (fn, ms) => window.setTimeout(fn, ms),
     clearTimer: (h) => window.clearTimeout(h as number),
-    savedAsCopy: hooks.savedAsCopy,
+    savedAsCopy: (original, copy) => shared.savedAsCopy(original, copy),
   });
-  const coordinator = new SyncCoordinator(engine, auth, broadcastChannel('konekton-sync'), {
+  const forgetAccount = () => {
+    auth.signOut();
+    localStorage.removeItem(SPACE_KEY);
+  };
+  const coordinator = new SyncCoordinator(engine, broadcastChannel('konekton-sync'), space, {
     locks: typeof navigator !== 'undefined' && 'locks' in navigator ? navigator.locks : undefined,
     onReload: reload,
+    onSignOut() {
+      forgetAccount();
+      reload();
+    },
+    onLeader: () => shared.becameLeader(),
+    onToken(token, expiresAt, account) {
+      if (space === LOCAL_SPACE || account !== space) return;
+      gate.confirm(token);
+      auth.adoptToken(token, expiresAt);
+    },
   });
 
-  /** After a sign-in (also a renewal): is this still the account of the open space? */
+  /**
+   * After a sign-in (also a renewal): whose token is it? The account of the open space: the engine may use it.
+   * Signed out until now: the signed-out files move to the account. Another account: refused; the open space never
+   * switches by itself (two tabs with tokens of two accounts would reload each other forever).
+   */
   let identifying = false;
   const identify = async () => {
     if (identifying) return;
     identifying = true;
     try {
-      const about = await drive.about();
-      if (about.emailAddress) auth.setEmail(about.emailAddress);
-      if (about.permissionId === space) return;
-      if (space === LOCAL_SPACE) {
+      // Again while a newer token came during the check.
+      for (;;) {
+        const s = auth.state();
+        if (s.kind !== 'signedIn' || gate.isConfirmed(s.token)) return;
+        const about = await aboutWith(s.token);
+        if (about.permissionId === space) {
+          if (about.emailAddress) auth.setEmail(about.emailAddress);
+          gate.confirm(s.token);
+          coordinator.shareToken(s.token, s.expiresAt, space);
+          continue;
+        }
+        if (space !== LOCAL_SPACE) {
+          auth.failed(`Signed in as ${about.emailAddress ?? 'another Google account'}, but the open files belong to another account. Sign out first to switch accounts.`);
+          return;
+        }
+        if (about.emailAddress) auth.setEmail(about.emailAddress);
         const account = await openStore(about.permissionId, false);
         const notes = await moveEntries(await openStore(LOCAL_SPACE, false), account);
         if (notes.length > 0) sessionStorage.setItem(NOTE_KEY, notes.join(' '));
+        localStorage.setItem(SPACE_KEY, about.permissionId);
+        coordinator.reloadOthers();
+        reload();
+        return;
       }
-      localStorage.setItem(SPACE_KEY, about.permissionId);
-      coordinator.reloadOthers();
-      reload();
     } catch (err) {
       // A 401 already moved `auth` on. Offline: the next sign-in or reload tries again.
       // Anything else would leave the page signed in but unsynced without a word, so the badge shows it.
@@ -114,6 +165,7 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
   });
   if (auth.state().kind === 'signedIn') void identify();
 
+  shared.start();
   coordinator.start();
   window.addEventListener('online', () => coordinator.onOnline());
 
@@ -130,9 +182,8 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
       auth.signIn();
     },
     signOut() {
-      auth.signOut();
-      localStorage.removeItem(SPACE_KEY);
-      coordinator.reloadOthers();
+      forgetAccount();
+      coordinator.signOutOthers();
       reload();
     },
   };

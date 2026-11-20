@@ -38,6 +38,8 @@ export interface DriveApi {
   listAll(): Promise<DriveFile[]>;
   createFolder(name: string, parentId: string): Promise<{ id: string }>;
   download(id: string): Promise<string>;
+  /** The current `version` of a file; `GoneError` when it is gone or in the trash. */
+  version(id: string): Promise<string>;
   create(name: string, parentId: string, text: string, mime: string): Promise<WriteResult>;
   update(id: string, text: string, mime: string): Promise<WriteResult>;
 }
@@ -117,6 +119,14 @@ export class HttpDriveApi implements DriveApi {
   async download(id: string): Promise<string> {
     const res = await this.call(`${API}/files/${encodeURIComponent(id)}?alt=media`);
     return res.text();
+  }
+
+  async version(id: string): Promise<string> {
+    const res = await this.call(`${API}/files/${encodeURIComponent(id)}?fields=${encodeURIComponent('version,trashed')}`);
+    const file = (await res.json()) as { version?: string; trashed?: boolean };
+    if (file.trashed) throw new GoneError();
+    if (typeof file.version !== 'string') throw new Error('Drive did not give the version of the file.');
+    return file.version;
   }
 
   async create(name: string, parentId: string, text: string, mime: string): Promise<WriteResult> {

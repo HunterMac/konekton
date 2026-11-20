@@ -11,7 +11,7 @@ interface Item extends DriveFile {
 /** Like the real Drive: `parents` of a top-level item holds this id, never the alias `root`. */
 export const MY_DRIVE_ID = 'MYDRIVE';
 
-type Op = 'about' | 'listAll' | 'createFolder' | 'download' | 'create' | 'update';
+type Op = 'about' | 'listAll' | 'createFolder' | 'download' | 'version' | 'create' | 'update';
 
 export class FakeDrive implements DriveApi {
   private items = new Map<string, Item>();
@@ -136,6 +136,14 @@ export class FakeDrive implements DriveApi {
     const item = this.items.get(id);
     if (!item || item.trashed) throw new GoneError();
     return item.text ?? '';
+  }
+
+  async version(id: string): Promise<string> {
+    this.log.push(`version ${this.nameOf(id)}`);
+    this.maybeFail('version');
+    const item = this.items.get(id);
+    if (!item || item.trashed) throw new GoneError();
+    return item.version;
   }
 
   /** The folder `konekton` and everything in it deleted for good (Drive answers 404 for it). */

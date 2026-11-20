@@ -4,8 +4,8 @@ import type { Dialogs, PromptOptions } from './types';
 const NOTICE_MS = 4000;
 
 type QuestionBody =
-  | { kind: 'conflict'; name: string; copyName: string; resolve(answer: 'reload' | 'saveAs'): void }
-  | { kind: 'removed'; path: string; resolve(answer: 'write' | 'delete'): void }
+  | { kind: 'conflict'; name: string; copyName: string; tag?: string; resolve(answer: 'reload' | 'saveAs'): void }
+  | { kind: 'removed'; path: string; tag?: string; resolve(answer: 'write' | 'delete'): void }
   | { kind: 'prompt'; message: string; initial: string; options: PromptOptions; resolve(answer: string | undefined): void }
   | { kind: 'alert'; message: string; resolve(): void };
 
@@ -61,12 +61,19 @@ export class BrowserDialogs implements Dialogs {
     }, NOTICE_MS);
   }
 
-  askConflict(name: string, copyName: string): Promise<'reload' | 'saveAs'> {
-    return new Promise((resolve) => this.ask({ kind: 'conflict', name, copyName, resolve }));
+  /** `tag`: lets `withdraw` take the question back (answered in another tab). */
+  askConflict(name: string, copyName: string, tag?: string): Promise<'reload' | 'saveAs'> {
+    return new Promise((resolve) => this.ask({ kind: 'conflict', name, copyName, tag, resolve }));
   }
 
-  askRemoved(path: string): Promise<'write' | 'delete'> {
-    return new Promise((resolve) => this.ask({ kind: 'removed', path, resolve }));
+  askRemoved(path: string, tag?: string): Promise<'write' | 'delete'> {
+    return new Promise((resolve) => this.ask({ kind: 'removed', path, tag, resolve }));
+  }
+
+  /** Take back the questions with this tag, unanswered (their promises never settle). */
+  withdraw(tag: string): void {
+    const rest = this.state.questions.filter((q) => !((q.kind === 'conflict' || q.kind === 'removed') && q.tag === tag));
+    if (rest.length !== this.state.questions.length) this.update({ questions: rest });
   }
 
   /** The answer to the conflict or removed question that is shown. */

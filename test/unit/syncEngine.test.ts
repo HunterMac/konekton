@@ -283,6 +283,61 @@ describe('refresh', () => {
       expect(t.drive.count('update a.canvas')).toBe(before);
       expect(t.engine.status()).toEqual({ kind: 'notSynced', detail: 'asking' });
     });
+
+    it('Save as copy never overwrites a file that took the shown name meanwhile', async () => {
+      const t = await clash();
+      await t.store.createNew('a_web.canvas', 'board', 'someone else');
+      t.dialogs.answer('saveAs');
+      await settle();
+      expect(await t.store.get('a_web.canvas')).toMatchObject({ text: 'someone else' });
+      expect(await t.store.get('a_web-2.canvas')).toMatchObject({ text: 'mine' });
+      expect(await t.store.get('a.canvas')).toMatchObject({ text: 'theirs', synced: true });
+      expect(t.copies).toEqual([['a.canvas', 'a_web-2.canvas']]);
+      expect(t.dialogs.notices).toContainEqual(expect.stringContaining('a_web-2.canvas'));
+    });
+
+    it('an edit made after the answer is not dropped: the question comes again', async () => {
+      const t = await clash();
+      const answered = t.dialogs.conflicts.length;
+      // The edit lands after the engine read my text for the copy, before it writes Drive's text.
+      const createNew = t.store.createNew.bind(t.store);
+      t.store.createNew = async (path, kind, text) => {
+        const r = await createNew(path, kind, text);
+        const cur = await t.store.get('a.canvas');
+        await t.store.saveIfMatch('a.canvas', 'mine, later', cur!.etag);
+        return r;
+      };
+      t.dialogs.answer('saveAs');
+      await settle();
+      t.store.createNew = createNew;
+      expect(await t.store.get('a_web.canvas')).toMatchObject({ text: 'mine' });
+      expect(await t.store.get('a.canvas')).toMatchObject({ text: 'mine, later', synced: false });
+      await advance(15_100);
+      expect(t.dialogs.conflicts.length).toBe(answered + 1);
+      expect(t.drive.textOf('a.canvas')).toBe('theirs');
+    });
+  });
+
+  it('a push does not overwrite a change made on Drive since the last refresh: it asks', async () => {
+    const t = await setup();
+    await edit(t.store, 'a.canvas', 'one');
+    await settle();
+    t.drive.editFile('a.canvas', 'theirs'); // another device, before any refresh here
+    await edit(t.store, 'a.canvas', 'mine');
+    await advance(15_100);
+    expect(t.drive.textOf('a.canvas')).toBe('theirs');
+    expect(t.dialogs.conflicts).toEqual([{ name: 'a.canvas', copyName: 'a_web.canvas' }]);
+  });
+
+  it('a push whose base is still the Drive version writes', async () => {
+    const t = await setup();
+    await edit(t.store, 'a.canvas', 'one');
+    await settle();
+    await edit(t.store, 'a.canvas', 'two');
+    await advance(15_100);
+    expect(t.drive.textOf('a.canvas')).toBe('two');
+    expect(t.drive.count('version a.canvas')).toBe(1);
+    expect(t.dialogs.conflicts).toEqual([]);
   });
 
   it('a sign-in clash (no remote version, other text) asks; equal text does not', async () => {

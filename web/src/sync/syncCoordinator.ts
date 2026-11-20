@@ -1,37 +1,50 @@
-import type { GoogleAuth } from './googleAuth';
 import type { ChannelLike } from './localStore';
 import { statusEquals, type SyncControl, type SyncEngine, type SyncStatus } from './syncEngine';
 
-export const LOCK_NAME = 'konekton-sync';
+/** The Web Lock of the engine of one space: tabs of two spaces (during an account change) each get their own leader. */
+export const lockName = (space: string): string => `konekton-sync:${space}`;
 
-type Message =
+type SpaceMessage =
   | { type: 'status'; status: SyncStatus }
   | { type: 'hello' }
   | { type: 'syncNow' }
   | { type: 'focus' }
   | { type: 'online' }
-  | { type: 'token'; token: string; expiresAt: number }
-  | { type: 'reload' };
+  /** `account`: the `permissionId` Drive gave for this token. */
+  | { type: 'token'; token: string; expiresAt: number; account: string };
+
+/** For every tab of the browser, whatever its space. */
+type BrowserMessage = { type: 'reload' } | { type: 'signOut' };
+
+type Message = (SpaceMessage & { space: string }) | BrowserMessage;
 
 interface LockManagerLike {
   request(name: string, callback: () => Promise<unknown>): Promise<unknown>;
 }
 
 /**
- * One tab per browser runs the `SyncEngine`: the one that holds the Web Lock. The other tabs show its status and
+ * One tab per space runs the `SyncEngine`: the one that holds the space's Web Lock. The other tabs show its status and
  * pass `syncNow`, focus and tokens to it through a `BroadcastChannel`. When the leader closes, the next tab takes over.
  */
 export class SyncCoordinator implements SyncControl {
   private leader = false;
   private mirrored: SyncStatus = { kind: 'notSynced', detail: 'checking' };
   private readonly listeners = new Set<(s: SyncStatus) => void>();
-  private lastToken: string | undefined;
 
   constructor(
     private readonly engine: SyncEngine,
-    private readonly auth: GoogleAuth,
     private readonly channel: ChannelLike,
-    private readonly opts: { locks?: LockManagerLike; onReload?: () => void } = {},
+    private readonly space: string,
+    private readonly opts: {
+      locks?: LockManagerLike;
+      onReload?: () => void;
+      /** Another tab signed out: forget the account here too (then reload). */
+      onSignOut?: () => void;
+      /** This tab runs the engine from now on (before the engine starts). */
+      onLeader?: () => void;
+      /** The leader got a token of another tab; the receiver checks `account` before it uses it. */
+      onToken?: (token: string, expiresAt: number, account: string) => void;
+    } = {},
   ) {}
 
   isLeader(): boolean {
@@ -46,13 +59,9 @@ export class SyncCoordinator implements SyncControl {
         this.emit(s);
       }
     });
-    this.auth.onChange((s) => {
-      if (s.kind !== 'signedIn' || s.token === this.lastToken) return;
-      this.lastToken = s.token;
-      this.post({ type: 'token', token: s.token, expiresAt: s.expiresAt });
-    });
     const becomeLeader = async (): Promise<never> => {
       this.leader = true;
+      this.opts.onLeader?.();
       await this.engine.start();
       this.emit(this.engine.status());
       this.post({ type: 'status', status: this.engine.status() });
@@ -60,20 +69,30 @@ export class SyncCoordinator implements SyncControl {
       return new Promise<never>(() => undefined);
     };
     if (this.opts.locks) {
-      void this.opts.locks.request(LOCK_NAME, becomeLeader);
+      void this.opts.locks.request(lockName(this.space), becomeLeader);
       this.post({ type: 'hello' });
     } else {
       void becomeLeader();
     }
   }
 
-  /** Another tab of this browser must reload (the account changed). */
-  reloadOthers(): void {
-    this.post({ type: 'reload' });
+  /** Pass a token whose account Drive confirmed to the leader, so it need not ask the person again. */
+  shareToken(token: string, expiresAt: number, account: string): void {
+    this.post({ type: 'token', token, expiresAt, account });
   }
 
-  private post(m: Message): void {
-    this.channel.postMessage(m);
+  /** Another tab of this browser must reload (the account changed). */
+  reloadOthers(): void {
+    this.channel.postMessage({ type: 'reload' } satisfies Message);
+  }
+
+  /** Every other tab of this browser must sign out too: a tab left signed in would bring the account back. */
+  signOutOthers(): void {
+    this.channel.postMessage({ type: 'signOut' } satisfies Message);
+  }
+
+  private post(m: SpaceMessage): void {
+    this.channel.postMessage({ ...m, space: this.space } satisfies Message);
   }
 
   private emit(s: SyncStatus): void {
@@ -82,6 +101,15 @@ export class SyncCoordinator implements SyncControl {
 
   private onMessage(m: Message | undefined): void {
     if (!m || typeof m !== 'object') return;
+    if (m.type === 'reload') {
+      this.opts.onReload?.();
+      return;
+    }
+    if (m.type === 'signOut') {
+      this.opts.onSignOut?.();
+      return;
+    }
+    if (m.space !== this.space) return;
     switch (m.type) {
       case 'status':
         if (!this.leader && !statusEquals(this.mirrored, m.status)) {
@@ -102,13 +130,7 @@ export class SyncCoordinator implements SyncControl {
         if (this.leader) this.engine.onOnline();
         break;
       case 'token':
-        if (this.leader) {
-          this.lastToken = m.token;
-          this.auth.adoptToken(m.token, m.expiresAt);
-        }
-        break;
-      case 'reload':
-        this.opts.onReload?.();
+        if (this.leader && typeof m.account === 'string') this.opts.onToken?.(m.token, m.expiresAt, m.account);
         break;
     }
   }

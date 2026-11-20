@@ -52,7 +52,11 @@ export interface GoogleAuthDeps {
   /** Where Google's page sends the token back. Listed under "Authorized redirect URIs" of the OAuth client. */
   redirectUri: string;
   random(): string;
+  /** End the token at Google. Must survive the reload that follows a sign-out. */
+  revoke(token: string): void;
 }
+
+const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
 
 function withDefaults(d: Partial<GoogleAuthDeps>): GoogleAuthDeps {
   return {
@@ -71,6 +75,12 @@ function withDefaults(d: Partial<GoogleAuthDeps>): GoogleAuthDeps {
     },
     redirectUri: d.redirectUri ?? `${window.location.origin}${import.meta.env.BASE_URL}`,
     random: d.random ?? (() => crypto.randomUUID()),
+    revoke:
+      d.revoke ??
+      ((token) => {
+        // `keepalive`: the page reloads right after.
+        void fetch(REVOKE_URL, { method: 'POST', body: new URLSearchParams({ token }), keepalive: true }).catch(() => undefined);
+      }),
   };
 }
 
@@ -304,9 +314,12 @@ export class GoogleAuth {
     this.request(this.hint() === undefined ? 'select_account' : '');
   }
 
-  /** Forget token and account. The Google session and the consent stay. */
+  /** Forget token and account, and end the token at Google (with it the consent: the next sign-in asks again). The Google session stays. */
   signOut(): void {
     this.stopGestureListening();
+    // A token kept elsewhere (a restored tab keeps its session storage) must not work any more.
+    const token = this.current.kind === 'signedIn' ? this.current.token : this.readToken()?.token;
+    if (token !== undefined) this.deps.revoke(token);
     try {
       this.deps.storage.removeItem(TOKEN_KEY);
       this.deps.local.removeItem(HINT_KEY);

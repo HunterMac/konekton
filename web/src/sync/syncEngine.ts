@@ -18,6 +18,9 @@ export type SyncStatus =
 
 export const statusEquals = (a: SyncStatus, b: SyncStatus): boolean => JSON.stringify(a) === JSON.stringify(b);
 
+/** The sign-in as the engine sees it: `verifying` while Drive has not said yet whose token it is (see `AccountGate`). */
+export type EngineAuthState = AuthState | { kind: 'verifying' };
+
 /** What the page and the badge use; the engine itself or a mirror of the engine in another tab. */
 export interface SyncControl {
   status(): SyncStatus;
@@ -29,8 +32,8 @@ export interface SyncControl {
 export interface SyncDeps {
   store: LocalStore;
   drive: DriveApi;
-  auth: { state(): AuthState; onChange(listener: (s: AuthState) => void): () => void };
-  dialogs: Dialogs;
+  auth: { state(): EngineAuthState; onChange(listener: (s: EngineAuthState) => void): () => void };
+  dialogs: Pick<Dialogs, 'notify' | 'askConflict' | 'askRemoved'>;
   now(): number;
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
@@ -97,6 +100,7 @@ export class SyncEngine implements SyncControl {
     if (a.kind === 'signedOut') return { kind: 'notSynced', detail: 'signedOut' };
     if (a.kind === 'needsGesture') return { kind: 'notSynced', detail: 'needsGesture' };
     if (a.kind === 'needsReconnect') return { kind: 'notSynced', detail: 'needsReconnect', message: a.reason };
+    if (a.kind === 'verifying') return { kind: 'notSynced', detail: 'checking' };
     if (this.error !== undefined) return { kind: 'notSynced', detail: 'error', message: this.error };
     if (this.open.size > 0) return { kind: 'notSynced', detail: 'asking' };
     if (this.syncing) return { kind: 'notSynced', detail: 'syncing' };
@@ -338,22 +342,33 @@ export class SyncEngine implements SyncControl {
     this.lastSyncAt = this.deps.now();
     this.syncing = true;
     this.emitStatus();
-    for (const entry of entries) await this.write(entry);
+    let changedOnDrive = false;
+    for (const entry of entries) if (!(await this.write(entry))) changedOnDrive = true;
     this.syncing = false;
+    if (changedOnDrive) {
+      // The refresh compares those files with Drive and asks which version wins; it runs the rule again itself.
+      this.needRefresh = true;
+      await this.doRefresh();
+      return;
+    }
     // Entries that changed during the upload are still unsynced: the rule runs again.
     this.schedulePush();
   }
 
-  private async write(entry: Entry): Promise<void> {
+  /** Upload one entry. `false`: Drive has a newer version than the one the text is based on; nothing written. */
+  private async write(entry: Entry): Promise<boolean> {
     const mime = mimeOf(entry.path);
     let written;
     if (entry.driveId !== undefined) {
       try {
+        // Drive has no "write only if still version X": check just before, so a change made on another device
+        // since the last refresh is not overwritten without a question.
+        if (entry.remoteVersion !== undefined && (await this.drive.version(entry.driveId)) !== entry.remoteVersion) return false;
         written = await this.drive.update(entry.driveId, entry.text, mime);
       } catch (err) {
         if (err instanceof GoneError) {
           this.askRemoved(entry.path);
-          return;
+          return true;
         }
         throw err;
       }
@@ -380,6 +395,7 @@ export class SyncEngine implements SyncControl {
     // Changed during the upload: keep it unsynced, but remember where it lives on Drive.
     if (!done) await this.store.update(entry.path, { driveId: written.id, remoteVersion: written.version });
     else this.dirty.delete(entry.path);
+    return true;
   }
 
   // --- Refresh ---------------------------------------------------------------------------------
@@ -469,22 +485,26 @@ export class SyncEngine implements SyncControl {
   private askConflict(path: string, kind: Entry['kind'], remote: RemoteFile, tree: DriveTree): void {
     if (this.open.has(path)) return;
     this.enqueueQuestion(path, 'conflict', async () => {
-      const copy = await this.freeCopyName(path, kind, tree);
-      const answer = await this.deps.dialogs.askConflict(path, copy);
+      const shown = await this.freeCopyName(path, kind, tree);
+      const answer = await this.deps.dialogs.askConflict(path, shown);
       const text = await this.drive.download(remote.id).catch((err: unknown) => {
         if (err instanceof GoneError) return undefined;
         throw err;
       });
       if (text === undefined) return;
       const mine = await this.store.get(path);
+      let copy: string | undefined;
       if (answer === 'saveAs' && mine) {
         // My version goes to the copy (unsynced: it is created on Drive by the next push); the original takes Drive's text.
-        await this.store.createNew(copy, kind, mine.text);
+        copy = await this.saveCopy(path, kind, mine.text, tree);
         this.dirty.add(copy);
+        if (copy !== shown) this.deps.dialogs.notify(`${shown} was taken meanwhile; saved your version as ${copy}.`);
       }
-      await this.store.put(path, kind, text, { synced: true, driveId: remote.id, remoteVersion: remote.version });
-      this.dirty.delete(path);
-      if (answer === 'saveAs' && mine) this.deps.savedAsCopy?.(path, copy);
+      const done = await this.store.put(path, kind, text, { synced: true, driveId: remote.id, remoteVersion: remote.version, ifEtag: mine?.etag });
+      if (done) this.dirty.delete(path);
+      // Written again after the answer: those changes are not in the copy, so the next push refreshes and asks again.
+      else this.needRefresh = true;
+      if (copy !== undefined) this.deps.savedAsCopy?.(path, copy);
     });
   }
 
@@ -492,6 +512,16 @@ export class SyncEngine implements SyncControl {
     for (let n = 1; n < 1000; n++) {
       const copy = kind === 'board' ? webCopyName(path, n) : fileCopyName(path, n);
       if (!tree.files.has(copy) && !(await this.store.get(copy))) return copy;
+    }
+    throw new Error('Too many copies');
+  }
+
+  /** Create the copy under the first free name; never over a file that took the shown name while the question was open. */
+  private async saveCopy(path: string, kind: Entry['kind'], text: string, tree: DriveTree): Promise<string> {
+    for (let n = 1; n < 1000; n++) {
+      const copy = kind === 'board' ? webCopyName(path, n) : fileCopyName(path, n);
+      if (tree.files.has(copy)) continue;
+      if ((await this.store.createNew(copy, kind, text)) !== 'exists') return copy;
     }
     throw new Error('Too many copies');
   }

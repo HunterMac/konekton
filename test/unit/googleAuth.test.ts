@@ -51,6 +51,7 @@ function setup(
     revoke: () => undefined,
   };
   const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
+  const revoked: string[] = [];
   const auth = new GoogleAuth('client', {
     now: () => clock.now,
     storage,
@@ -73,13 +74,14 @@ function setup(
     },
     redirectUri: 'https://app.test/konekton/',
     random: () => 'S1',
+    revoke: (t) => void revoked.push(t),
   });
   const runTimers = () => {
     for (const t of timers.splice(0)) if (!t.cleared) t.fn();
   };
   const states: AuthState[] = [];
   auth.onChange((s) => states.push(s));
-  return { auth, storage, local, target, clock, requests, cfg, states, runTimers, page };
+  return { auth, storage, local, target, clock, requests, cfg, states, runTimers, page, revoked };
 }
 
 describe('GoogleAuth', () => {
@@ -248,6 +250,7 @@ describe('GoogleAuth', () => {
     expect(a.auth.state().kind).toBe('signedOut');
     expect(a.storage.getItem('konekton.google.token')).toBeNull();
     expect(a.local.getItem('konekton.google.hint')).toBeNull();
+    expect(a.revoked).toEqual(['T1']);
     expect(a.auth.token()).toBeUndefined();
     expect(setup().auth.state().kind).toBe('signedOut');
   });
