@@ -30,9 +30,12 @@ class FakeTarget {
   }
 }
 
-function setup(opts: { hint?: string; token?: { token: string; expiresAt: number }; now?: number } = {}) {
-  const storage = new MemoryStorage();
-  const local = new MemoryStorage();
+function setup(
+  opts: { hint?: string; token?: { token: string; expiresAt: number }; now?: number; storage?: MemoryStorage; local?: MemoryStorage; href?: string } = {},
+) {
+  const storage = opts.storage ?? new MemoryStorage();
+  const local = opts.local ?? new MemoryStorage();
+  const page = { href: opts.href ?? 'https://app.test/konekton/?board=b1', replaced: [] as string[], went: [] as string[] };
   const target = new FakeTarget();
   const clock = { now: opts.now ?? 1_000_000 };
   if (opts.hint) local.setItem('konekton.google.hint', opts.hint);
@@ -63,13 +66,20 @@ function setup(opts: { hint?: string; token?: { token: string; expiresAt: number
       (h as { cleared: boolean }).cleared = true;
     },
     log: () => undefined,
+    page: {
+      href: () => page.href,
+      replace: (url) => void page.replaced.push(url),
+      go: (url) => void page.went.push(url),
+    },
+    redirectUri: 'https://app.test/konekton/',
+    random: () => 'S1',
   });
   const runTimers = () => {
     for (const t of timers.splice(0)) if (!t.cleared) t.fn();
   };
   const states: AuthState[] = [];
   auth.onChange((s) => states.push(s));
-  return { auth, storage, local, target, clock, requests, cfg, states, runTimers };
+  return { auth, storage, local, target, clock, requests, cfg, states, runTimers, page };
 }
 
 describe('GoogleAuth', () => {
@@ -150,14 +160,66 @@ describe('GoogleAuth', () => {
     }
   });
 
-  it('a popup that failed to open needs a reconnect', () => {
+  it('a popup that failed to open needs a reconnect, which then signs in on Google\'s page', () => {
     const a = setup({ hint: 'me@example.com' });
     a.target.fire('pointerdown');
     a.cfg.error_callback?.({ type: 'popup_failed_to_open' });
-    expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'The browser blocked the Google window.' });
+    expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'The browser blocked the Google window. Reconnect signs in on this page instead.' });
+    a.auth.signIn();
+    expect(a.requests).toHaveLength(1);
+    expect(a.page.went).toHaveLength(1);
+  });
+
+  it('a popup closed without a token switches this browser to the sign-in on Google\'s page', () => {
+    const a = setup({ hint: 'me@example.com' });
+    a.target.fire('pointerdown');
     a.cfg.error_callback?.({ type: 'popup_closed' });
     a.runTimers();
-    expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'Sign-in was closed.' });
+    expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'The Google window closed without signing in. Reconnect signs in on this page instead.' });
+    a.auth.signIn();
+    expect(a.requests).toHaveLength(1);
+    const url = new URL(a.page.went[0]);
+    expect(url.origin + url.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      client_id: 'client',
+      redirect_uri: 'https://app.test/konekton/',
+      response_type: 'token',
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      include_granted_scopes: 'true',
+      state: 'S1',
+      login_hint: 'me@example.com',
+    });
+    expect(JSON.parse(a.storage.getItem('konekton.google.pending') ?? '')).toEqual({ state: 'S1', back: '/konekton/?board=b1' });
+  });
+
+  it('back from Google\'s page: takes the token, restores the address and keeps the token', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('konekton.google.pending', JSON.stringify({ state: 'S1', back: '/konekton/?board=b1' }));
+    const href = 'https://app.test/konekton/#state=S1&access_token=T5&token_type=Bearer&expires_in=3599&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file';
+    const a = setup({ storage, href });
+    expect(a.auth.state()).toMatchObject({ kind: 'signedIn', token: 'T5', expiresAt: 1_000_000 + 3_599_000 });
+    expect(a.page.replaced).toEqual(['/konekton/?board=b1']);
+    expect(storage.getItem('konekton.google.pending')).toBeNull();
+    expect(JSON.parse(storage.getItem('konekton.google.token') ?? '')).toMatchObject({ token: 'T5' });
+  });
+
+  it('back from Google\'s page with a wrong state or a refusal: no token', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('konekton.google.pending', JSON.stringify({ state: 'S1', back: '/konekton/' }));
+    const wrong = setup({ storage, href: 'https://app.test/konekton/#state=EVIL&access_token=T6&expires_in=3599' });
+    expect(wrong.auth.state().kind).toBe('needsReconnect');
+    expect(wrong.auth.token()).toBeUndefined();
+    storage.setItem('konekton.google.pending', JSON.stringify({ state: 'S1', back: '/konekton/' }));
+    const refused = setup({ storage, href: 'https://app.test/konekton/#state=S1&error=access_denied' });
+    expect(refused.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'Sign-in was cancelled.' });
+  });
+
+  it('with the page sign-in an ended token waits for Reconnect, not for any click', () => {
+    const local = new MemoryStorage();
+    local.setItem('konekton.google.redirect', '1');
+    const a = setup({ hint: 'me@example.com', local });
+    expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'The Google sign-in ended (it lasts an hour).' });
+    expect(a.target.count()).toBe(0);
   });
 
   it('"popup closed" right before or after the token does not undo the sign-in', () => {

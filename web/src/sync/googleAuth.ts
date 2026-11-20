@@ -9,6 +9,11 @@ export type AuthState =
 
 const TOKEN_KEY = 'konekton.google.token';
 const HINT_KEY = 'konekton.google.hint';
+/** Set once the Google window failed in this browser: sign-in then leaves the page for Google and comes back. */
+const REDIRECT_KEY = 'konekton.google.redirect';
+/** The `state` of a sign-in on Google's page and the address to come back to. */
+const PENDING_KEY = 'konekton.google.pending';
+const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 /** A token counts as ended this long before its end time. */
 const MARGIN_MS = 60_000;
 
@@ -23,6 +28,14 @@ interface EventTargetLike {
   removeEventListener(type: string, listener: (e?: Event) => void, capture?: boolean): void;
 }
 
+interface PageLike {
+  href(): string;
+  /** Change the address without loading a page. */
+  replace(url: string): void;
+  /** Leave for another page. */
+  go(url: string): void;
+}
+
 export interface GoogleAuthDeps {
   now(): number;
   /** Token, for the length of the tab session. */
@@ -35,6 +48,10 @@ export interface GoogleAuthDeps {
   setTimer(fn: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
   log(message: string): void;
+  page: PageLike;
+  /** Where Google's page sends the token back. Listed under "Authorized redirect URIs" of the OAuth client. */
+  redirectUri: string;
+  random(): string;
 }
 
 function withDefaults(d: Partial<GoogleAuthDeps>): GoogleAuthDeps {
@@ -47,6 +64,13 @@ function withDefaults(d: Partial<GoogleAuthDeps>): GoogleAuthDeps {
     setTimer: d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)),
     clearTimer: d.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
     log: d.log ?? ((m) => console.info(`[konekton] ${m}`)),
+    page: d.page ?? {
+      href: () => window.location.href,
+      replace: (url) => history.replaceState(null, '', url),
+      go: (url) => window.location.assign(url),
+    },
+    redirectUri: d.redirectUri ?? `${window.location.origin}${import.meta.env.BASE_URL}`,
+    random: d.random ?? (() => crypto.randomUUID()),
   };
 }
 
@@ -60,6 +84,8 @@ const CLOSED_GRACE_MS = 3000;
 /**
  * Google sign-in with the browser-only token client: no refresh token, no server. A token lasts about an hour;
  * a new one needs a user gesture, so after the end the next click or key press asks for it again.
+ * Some browsers never pass the token from Google's window back to the page; after one such failure, sign-in
+ * goes through Google's page in this tab instead (the token comes back in the address, `#access_token=...`).
  */
 export class GoogleAuth {
   private readonly deps: GoogleAuthDeps;
@@ -76,12 +102,83 @@ export class GoogleAuth {
     deps: Partial<GoogleAuthDeps> = {},
   ) {
     this.deps = withDefaults(deps);
+    if (this.takeRedirectAnswer()) return;
     const stored = this.readToken();
     if (stored && this.deps.now() < stored.expiresAt - MARGIN_MS) this.current = { kind: 'signedIn', token: stored.token, expiresAt: stored.expiresAt, email: this.hint() };
-    else if (this.hint() !== undefined) {
-      this.current = { kind: 'needsGesture' };
-      this.listenForGesture();
+    else if (this.hint() !== undefined) this.waitForGesture();
+  }
+
+  /** Back from Google's page: take the token out of the address and restore the address of before. */
+  private takeRedirectAnswer(): boolean {
+    const url = new URL(this.deps.page.href());
+    const answer = new URLSearchParams(url.hash.slice(1));
+    if (!answer.has('state') || !(answer.has('access_token') || answer.has('error'))) return false;
+    let pending: { state?: unknown; back?: unknown } | undefined;
+    try {
+      pending = JSON.parse(this.deps.storage.getItem(PENDING_KEY) ?? 'null') ?? undefined;
+      this.deps.storage.removeItem(PENDING_KEY);
+    } catch {
+      pending = undefined;
     }
+    this.deps.page.replace(typeof pending?.back === 'string' ? pending.back : `${url.pathname}${url.search}`);
+    if (pending?.state !== answer.get('state')) {
+      this.deps.log('sign-in answer: unknown state');
+      this.set({ kind: 'needsReconnect', reason: 'The answer from Google does not belong to this page. Sign in again.' });
+      return true;
+    }
+    const error = answer.get('error') ?? undefined;
+    this.deps.log(`sign-in answer (page): ${error ? `error ${error}` : `token, scope "${answer.get('scope') ?? ''}"`}`);
+    this.onToken({
+      access_token: answer.get('access_token') ?? undefined,
+      expires_in: Number(answer.get('expires_in') ?? 3600),
+      scope: answer.get('scope') ?? undefined,
+      error: error,
+      error_description: error === 'access_denied' ? 'Sign-in was cancelled.' : undefined,
+    });
+    return true;
+  }
+
+  private usesRedirect(): boolean {
+    try {
+      return this.deps.local.getItem(REDIRECT_KEY) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The Google window failed in this browser: from now on sign in through Google's page. */
+  private switchToRedirect(reason: string): void {
+    try {
+      this.deps.local.setItem(REDIRECT_KEY, '1');
+    } catch {
+      // Not kept: the next sign-in tries the window again.
+    }
+    this.set({ kind: 'needsReconnect', reason: `${reason} Reconnect signs in on this page instead.` });
+  }
+
+  /** Leave for Google's sign-in page; it comes back to `redirectUri` with the token. */
+  private redirect(prompt: string): void {
+    const state = this.deps.random();
+    const href = new URL(this.deps.page.href());
+    try {
+      this.deps.storage.setItem(PENDING_KEY, JSON.stringify({ state, back: `${href.pathname}${href.search}` }));
+    } catch {
+      this.set({ kind: 'needsReconnect', reason: 'This browser does not allow the storage the sign-in needs.' });
+      return;
+    }
+    const params = new URLSearchParams({
+      client_id: this.clientId,
+      redirect_uri: this.deps.redirectUri,
+      response_type: 'token',
+      scope: DRIVE_SCOPE,
+      include_granted_scopes: 'true',
+      state,
+    });
+    if (prompt) params.set('prompt', prompt);
+    const hint = this.hint();
+    if (hint !== undefined) params.set('login_hint', hint);
+    this.deps.log('sign-in requested (page)');
+    this.deps.page.go(`${GOOGLE_AUTH_URL}?${params.toString()}`);
   }
 
   state(): AuthState {
@@ -142,14 +239,15 @@ export class GoogleAuth {
       },
       error_callback: (e) => {
         this.deps.log(`sign-in error: ${e.type}${e.message ? ` (${e.message})` : ''}`);
-        if (e.type === 'popup_failed_to_open') this.set({ kind: 'needsReconnect', reason: 'The browser blocked the Google window.' });
+        if (e.type === 'popup_failed_to_open') this.switchToRedirect('The browser blocked the Google window.');
         else if (e.type === 'popup_closed') {
           // A token that came first wins; one that comes soon after cancels the timer.
           if (this.answered) return;
           this.clearClosedTimer();
+          // Closed by the person, or the browser kept the token from the page: both look the same here.
           this.closedTimer = this.deps.setTimer(() => {
             this.closedTimer = undefined;
-            this.set({ kind: 'needsReconnect', reason: 'Sign-in was closed.' });
+            this.switchToRedirect('The Google window closed without signing in.');
           }, CLOSED_GRACE_MS);
         } else this.set({ kind: 'needsReconnect', reason: e.message ?? 'Sign-in failed.' });
       },
@@ -179,6 +277,10 @@ export class GoogleAuth {
 
   /** Ask for a token. Call it from a click or key press: the popup needs the user activation of that event. */
   private request(prompt: string): void {
+    if (this.usesRedirect()) {
+      this.redirect(prompt);
+      return;
+    }
     const client = this.tokenClient();
     if (!client) {
       this.set({ kind: 'needsReconnect', reason: 'Google sign-in is not loaded.' });
@@ -257,6 +359,15 @@ export class GoogleAuth {
       this.deps.storage.removeItem(TOKEN_KEY);
     } catch {
       // Nothing to forget.
+    }
+    this.waitForGesture();
+  }
+
+  /** The token ended. The Google window opens on the next gesture; a page sign-in waits for the Reconnect button. */
+  private waitForGesture(): void {
+    if (this.usesRedirect()) {
+      this.set({ kind: 'needsReconnect', reason: 'The Google sign-in ended (it lasts an hour).' });
+      return;
     }
     this.listenForGesture();
     this.set({ kind: 'needsGesture' });

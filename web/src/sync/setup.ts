@@ -36,12 +36,6 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
   const drive = new HttpDriveApi(auth);
   const reload = () => window.location.reload();
 
-  const note = sessionStorage.getItem(NOTE_KEY);
-  if (note) {
-    sessionStorage.removeItem(NOTE_KEY);
-    window.setTimeout(() => dialogs.notify(note), 0);
-  }
-
   // Which space? Signed out: `local`. Otherwise the account of the last sign-in.
   let space = LOCAL_SPACE;
   if (auth.state().kind === 'signedOut') {
@@ -49,9 +43,12 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
   } else {
     let key = localStorage.getItem(SPACE_KEY);
     if (!key && auth.state().kind === 'signedIn') {
+      // Signed in on Google's page: the page loads signed in, so the signed-out files move here.
       try {
         const about = await drive.about();
         key = about.permissionId;
+        const notes = await moveEntries(await openStore(LOCAL_SPACE, false), await openStore(key, false));
+        if (notes.length > 0) sessionStorage.setItem(NOTE_KEY, notes.join(' '));
         localStorage.setItem(SPACE_KEY, key);
         if (about.emailAddress) auth.setEmail(about.emailAddress);
       } catch {
@@ -59,6 +56,12 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
       }
     }
     if (key) space = key;
+  }
+
+  const note = sessionStorage.getItem(NOTE_KEY);
+  if (note) {
+    sessionStorage.removeItem(NOTE_KEY);
+    window.setTimeout(() => dialogs.notify(note), 0);
   }
 
   const store = await openStore(space, true);
