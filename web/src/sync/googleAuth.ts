@@ -32,6 +32,9 @@ export interface GoogleAuthDeps {
   gis(): GisOauth2 | undefined;
   /** Where the click and key listeners go (`window`). */
   target: EventTargetLike;
+  setTimer(fn: () => void, ms: number): unknown;
+  clearTimer(handle: unknown): void;
+  log(message: string): void;
 }
 
 function withDefaults(d: Partial<GoogleAuthDeps>): GoogleAuthDeps {
@@ -41,8 +44,18 @@ function withDefaults(d: Partial<GoogleAuthDeps>): GoogleAuthDeps {
     local: d.local ?? localStorage,
     gis: d.gis ?? (() => window.google?.accounts.oauth2),
     target: d.target ?? window,
+    setTimer: d.setTimer ?? ((fn, ms) => setTimeout(fn, ms)),
+    clearTimer: d.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
+    log: d.log ?? ((m) => console.info(`[konekton] ${m}`)),
   };
 }
+
+/**
+ * How long a "popup closed" report waits for the token. Google's library cannot always see the popup (the
+ * Cross-Origin-Opener-Policy of Google's page blocks `window.closed`), and may report it closed although the token
+ * is on its way.
+ */
+const CLOSED_GRACE_MS = 3000;
 
 /**
  * Google sign-in with the browser-only token client: no refresh token, no server. A token lasts about an hour;
@@ -54,6 +67,9 @@ export class GoogleAuth {
   private current: AuthState = { kind: 'signedOut' };
   private client: GisTokenClient | undefined;
   private gestureListening = false;
+  private closedTimer: unknown;
+  /** Google answered the current request (token or error). */
+  private answered = false;
 
   constructor(
     private readonly clientId: string,
@@ -118,11 +134,24 @@ export class GoogleAuth {
     this.client = oauth2.initTokenClient({
       client_id: this.clientId,
       scope: DRIVE_SCOPE,
-      callback: (r) => this.onToken(r),
+      callback: (r) => {
+        this.deps.log(`sign-in answer: ${r.error ? `error ${r.error}` : `token, scope "${r.scope ?? ''}"`}`);
+        this.answered = true;
+        this.clearClosedTimer();
+        this.onToken(r);
+      },
       error_callback: (e) => {
+        this.deps.log(`sign-in error: ${e.type}${e.message ? ` (${e.message})` : ''}`);
         if (e.type === 'popup_failed_to_open') this.set({ kind: 'needsReconnect', reason: 'The browser blocked the Google window.' });
-        else if (e.type === 'popup_closed') this.set({ kind: 'needsReconnect', reason: 'Sign-in was closed.' });
-        else this.set({ kind: 'needsReconnect', reason: e.message ?? 'Sign-in failed.' });
+        else if (e.type === 'popup_closed') {
+          // A token that came first wins; one that comes soon after cancels the timer.
+          if (this.answered) return;
+          this.clearClosedTimer();
+          this.closedTimer = this.deps.setTimer(() => {
+            this.closedTimer = undefined;
+            this.set({ kind: 'needsReconnect', reason: 'Sign-in was closed.' });
+          }, CLOSED_GRACE_MS);
+        } else this.set({ kind: 'needsReconnect', reason: e.message ?? 'Sign-in failed.' });
       },
     });
     return this.client;
@@ -156,7 +185,15 @@ export class GoogleAuth {
       return;
     }
     const hint = this.hint();
+    this.answered = false;
+    this.clearClosedTimer();
+    this.deps.log('sign-in requested');
     client.requestAccessToken(hint !== undefined ? { prompt, login_hint: hint } : { prompt });
+  }
+
+  private clearClosedTimer(): void {
+    if (this.closedTimer !== undefined) this.deps.clearTimer(this.closedTimer);
+    this.closedTimer = undefined;
   }
 
   /** From a click. The first time Google shows its account list; later `login_hint` skips it. */

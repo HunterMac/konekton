@@ -47,10 +47,29 @@ function setup(opts: { hint?: string; token?: { token: string; expiresAt: number
     },
     revoke: () => undefined,
   };
-  const auth = new GoogleAuth('client', { now: () => clock.now, storage, local, gis: () => gis, target });
+  const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
+  const auth = new GoogleAuth('client', {
+    now: () => clock.now,
+    storage,
+    local,
+    gis: () => gis,
+    target,
+    setTimer: (fn, ms) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return t;
+    },
+    clearTimer: (h) => {
+      (h as { cleared: boolean }).cleared = true;
+    },
+    log: () => undefined,
+  });
+  const runTimers = () => {
+    for (const t of timers.splice(0)) if (!t.cleared) t.fn();
+  };
   const states: AuthState[] = [];
   auth.onChange((s) => states.push(s));
-  return { auth, storage, local, target, clock, requests, cfg, states };
+  return { auth, storage, local, target, clock, requests, cfg, states, runTimers };
 }
 
 describe('GoogleAuth', () => {
@@ -118,7 +137,20 @@ describe('GoogleAuth', () => {
     a.cfg.error_callback?.({ type: 'popup_failed_to_open' });
     expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'The browser blocked the Google window.' });
     a.cfg.error_callback?.({ type: 'popup_closed' });
+    a.runTimers();
     expect(a.auth.state()).toEqual({ kind: 'needsReconnect', reason: 'Sign-in was closed.' });
+  });
+
+  it('"popup closed" right before or after the token does not undo the sign-in', () => {
+    const a = setup();
+    a.auth.signIn();
+    a.cfg.error_callback?.({ type: 'popup_closed' });
+    a.cfg.callback?.({ access_token: 'T1', expires_in: 3600 });
+    a.runTimers();
+    expect(a.auth.state()).toMatchObject({ kind: 'signedIn', token: 'T1' });
+    a.cfg.error_callback?.({ type: 'popup_closed' });
+    a.runTimers();
+    expect(a.auth.state()).toMatchObject({ kind: 'signedIn', token: 'T1' });
   });
 
   it('signIn after the first time uses the hint and no account list', () => {
