@@ -32,7 +32,9 @@ const openStore = async (space: string, channel: boolean): Promise<LocalStore> =
  * The local space is `local` while signed out and the Drive account key (`permissionId`) after sign-in.
  */
 export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCopy(original: string, copy: string): void }): Promise<DriveMode> {
-  const auth = new GoogleAuth(import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '');
+  // A variable pasted with a line break gives "Error 401: invalid_client".
+  const clientId = (import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '').trim();
+  const auth = new GoogleAuth(clientId);
   const drive = new HttpDriveApi(auth);
   const reload = () => window.location.reload();
 
@@ -121,7 +123,7 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
     sync: coordinator,
     auth,
     signIn() {
-      if (!import.meta.env.VITE_GOOGLE_CLIENT_ID) {
+      if (!clientId) {
         void dialogs.alert('Google sign-in is not set up: VITE_GOOGLE_CLIENT_ID is missing in this build.');
         return;
       }
