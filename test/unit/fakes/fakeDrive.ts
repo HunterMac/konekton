@@ -11,6 +11,9 @@ interface Item extends DriveFile {
 /** Like the real Drive: `parents` of a top-level item holds this id, never the alias `root`. */
 export const MY_DRIVE_ID = 'MYDRIVE';
 
+/** `version` here is what `HttpDriveApi` gives the engine: the head revision, which changes only with the content. */
+const nextRevision = (v: string): string => `rev${Number(v.replace(/^rev/, '')) + 1}`;
+
 type Op = 'about' | 'listAll' | 'createFolder' | 'download' | 'version' | 'create' | 'update';
 
 export class FakeDrive implements DriveApi {
@@ -45,7 +48,7 @@ export class FakeDrive implements DriveApi {
   private add(name: string, mimeType: string, parent: string, text?: string): Item {
     const id = `id${++this.n}`;
     const t = this.time();
-    const item: Item = { id, name, mimeType, parents: [parent], version: '1', modifiedTime: t, createdTime: t, text };
+    const item: Item = { id, name, mimeType, parents: [parent], version: 'rev1', modifiedTime: t, createdTime: t, text };
     this.items.set(id, item);
     return item;
   }
@@ -87,7 +90,7 @@ export class FakeDrive implements DriveApi {
     const item = this.find(path);
     if (!item) throw new Error(`no ${path}`);
     item.text = text;
-    item.version = String(Number(item.version) + 1);
+    item.version = nextRevision(item.version);
     item.modifiedTime = this.time();
   }
 
@@ -173,7 +176,7 @@ export class FakeDrive implements DriveApi {
     const item = this.items.get(id);
     if (!item || item.trashed) throw new GoneError();
     item.text = text;
-    item.version = String(Number(item.version) + 1);
+    item.version = nextRevision(item.version);
     item.modifiedTime = this.time();
     await this.hook?.();
     return { id, version: item.version, modifiedTime: item.modifiedTime };

@@ -329,6 +329,20 @@ describe('refresh', () => {
     expect(t.dialogs.conflicts).toEqual([{ name: 'a.canvas', copyName: 'a_web.canvas' }]);
   });
 
+  it('an entry stored by an older build (Drive `version` digits) syncs without a false question', async () => {
+    const t = await setup({ start: false });
+    const id = t.drive.putFile('main.canvas', 'old');
+    const other = t.drive.putFile('other.canvas', 'theirs');
+    await t.store.put('main.canvas', 'board', 'mine', { synced: false, driveId: id, remoteVersion: '12' });
+    await t.store.put('other.canvas', 'board', 'old copy', { synced: true, driveId: other, remoteVersion: '5' });
+    await t.engine.start();
+    await advance(15_100);
+    expect(t.dialogs.conflicts).toEqual([]);
+    expect(t.drive.textOf('main.canvas')).toBe('mine');
+    expect(await t.store.get('main.canvas')).toMatchObject({ synced: true, remoteVersion: 'rev2' });
+    expect(await t.store.get('other.canvas')).toMatchObject({ text: 'theirs', synced: true, remoteVersion: 'rev1' });
+  });
+
   it('a push whose base is still the Drive version writes', async () => {
     const t = await setup();
     await edit(t.store, 'a.canvas', 'one');

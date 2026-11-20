@@ -27,8 +27,17 @@ export class GoneError extends Error {
 
 export interface WriteResult {
   id: string;
+  /** Content version: see `contentVersion`. */
   version: string;
   modifiedTime: string;
+}
+
+/**
+ * What the app calls the version of a file: its head revision, which changes only with the content. Drive's own
+ * `version` also counts changes Drive makes by itself (after an upload, for one), so it would look like an outside edit.
+ */
+export function contentVersion(f: { version?: string; headRevisionId?: string }): string | undefined {
+  return f.headRevisionId ?? f.version;
 }
 
 /** The Drive calls the sync engine needs. */
@@ -38,7 +47,7 @@ export interface DriveApi {
   listAll(): Promise<DriveFile[]>;
   createFolder(name: string, parentId: string): Promise<{ id: string }>;
   download(id: string): Promise<string>;
-  /** The current `version` of a file; `GoneError` when it is gone or in the trash. */
+  /** The current content version of a file (`contentVersion`); `GoneError` when it is gone or in the trash. */
   version(id: string): Promise<string>;
   create(name: string, parentId: string, text: string, mime: string): Promise<WriteResult>;
   update(id: string, text: string, mime: string): Promise<WriteResult>;
@@ -46,7 +55,10 @@ export interface DriveApi {
 
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const WRITE_FIELDS = 'id,version,modifiedTime';
+const WRITE_FIELDS = 'id,version,headRevisionId,modifiedTime';
+
+type WriteAnswer = { id: string; version?: string; headRevisionId?: string; modifiedTime: string };
+const writeResult = (w: WriteAnswer): WriteResult => ({ id: w.id, version: contentVersion(w) ?? '', modifiedTime: w.modifiedTime });
 
 /** MIME type of a file for upload. Drive never converts: these are plain files. */
 export function mimeOf(path: string): string {
@@ -94,14 +106,14 @@ export class HttpDriveApi implements DriveApi {
   }
 
   async listAll(): Promise<DriveFile[]> {
-    const fields = encodeURIComponent('nextPageToken,files(id,name,mimeType,parents,version,modifiedTime,createdTime,size)');
+    const fields = encodeURIComponent('nextPageToken,files(id,name,mimeType,parents,version,headRevisionId,modifiedTime,createdTime,size)');
     const q = encodeURIComponent('trashed=false');
     const out: DriveFile[] = [];
     let pageToken: string | undefined;
     do {
       const res = await this.call(`${API}/files?q=${q}&spaces=drive&pageSize=1000&fields=${fields}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`);
-      const body = (await res.json()) as { nextPageToken?: string; files?: DriveFile[] };
-      out.push(...(body.files ?? []));
+      const body = (await res.json()) as { nextPageToken?: string; files?: (DriveFile & { headRevisionId?: string })[] };
+      for (const { headRevisionId, ...f } of body.files ?? []) out.push({ ...f, version: contentVersion({ version: f.version, headRevisionId }) ?? '' });
       pageToken = body.nextPageToken;
     } while (pageToken);
     return out;
@@ -122,11 +134,12 @@ export class HttpDriveApi implements DriveApi {
   }
 
   async version(id: string): Promise<string> {
-    const res = await this.call(`${API}/files/${encodeURIComponent(id)}?fields=${encodeURIComponent('version,trashed')}`);
-    const file = (await res.json()) as { version?: string; trashed?: boolean };
+    const res = await this.call(`${API}/files/${encodeURIComponent(id)}?fields=${encodeURIComponent('version,headRevisionId,trashed')}`);
+    const file = (await res.json()) as { version?: string; headRevisionId?: string; trashed?: boolean };
     if (file.trashed) throw new GoneError();
-    if (typeof file.version !== 'string') throw new Error('Drive did not give the version of the file.');
-    return file.version;
+    const version = contentVersion(file);
+    if (version === undefined) throw new Error('Drive did not give the version of the file.');
+    return version;
   }
 
   async create(name: string, parentId: string, text: string, mime: string): Promise<WriteResult> {
@@ -138,7 +151,7 @@ export class HttpDriveApi implements DriveApi {
       headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
       body,
     });
-    return (await res.json()) as WriteResult;
+    return writeResult((await res.json()) as WriteAnswer);
   }
 
   async update(id: string, text: string, mime: string): Promise<WriteResult> {
@@ -147,6 +160,6 @@ export class HttpDriveApi implements DriveApi {
       headers: { 'Content-Type': `${mime}; charset=UTF-8` },
       body: text,
     });
-    return (await res.json()) as WriteResult;
+    return writeResult((await res.json()) as WriteAnswer);
   }
 }

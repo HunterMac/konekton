@@ -11,7 +11,7 @@ export interface Entry {
   /** The text is what Drive has. */
   synced: boolean;
   driveId?: string;
-  /** Drive `version` the text is based on. */
+  /** Content version on Drive (`contentVersion`) the text is based on. */
   remoteVersion?: string;
   /** A question is open; no sync for this entry. */
   asking?: 'conflict' | 'removed';

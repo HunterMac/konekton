@@ -47,6 +47,9 @@ type Op = 'push' | 'refresh';
 
 const byPath = (a: { path: string }, b: { path: string }): number => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
+/** Stored by an older build: Drive's `version` (digits), not comparable with a content version (`contentVersion`). */
+const isLegacyVersion = (v: string | undefined): boolean => v !== undefined && /^\d+$/.test(v);
+
 /**
  * Keeps the local copy and Drive equal. One engine per browser (see `SyncCoordinator`).
  * Push: at once if nothing was synced for `throttleMs`, else `throttleMs` after the last sync; only while
@@ -363,7 +366,8 @@ export class SyncEngine implements SyncControl {
       try {
         // Drive has no "write only if still version X": check just before, so a change made on another device
         // since the last refresh is not overwritten without a question.
-        if (entry.remoteVersion !== undefined && (await this.drive.version(entry.driveId)) !== entry.remoteVersion) return false;
+        const base = entry.remoteVersion;
+        if (base !== undefined && !isLegacyVersion(base) && (await this.drive.version(entry.driveId)) !== base) return false;
         written = await this.drive.update(entry.driveId, entry.text, mime);
       } catch (err) {
         if (err instanceof GoneError) {
@@ -448,7 +452,9 @@ export class SyncEngine implements SyncControl {
       return;
     }
     if (this.open.has(path)) return;
-    const changed = local.driveId !== remote.id || local.remoteVersion !== remote.version;
+    // An older build's version says nothing: unsynced, the push writes it (and stores a content version); synced, Drive's text is taken.
+    const unknownBase = isLegacyVersion(local.remoteVersion) && !local.synced;
+    const changed = local.driveId !== remote.id || (local.remoteVersion !== remote.version && !unknownBase);
     if (!changed) return;
     const text = await download();
     if (text === undefined) return;

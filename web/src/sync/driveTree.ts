@@ -10,6 +10,7 @@ export interface DriveFile {
   name: string;
   mimeType: string;
   parents?: string[];
+  /** Content version (`contentVersion` in driveApi), not Drive's own `version`. */
   version: string;
   modifiedTime: string;
   createdTime: string;
