@@ -127,16 +127,22 @@ body.kw-scroll #root {
 }
 
 .kw-legal {
+  position: fixed;
+  right: 12px;
+  bottom: 8px;
   display: flex;
-  gap: 16px;
-  margin-top: 40px;
-  padding-top: 12px;
-  border-top: 1px solid var(--eb-line);
-  font-size: 12px;
+  gap: 12px;
+  font-size: 11px;
 }
 
 .kw-legal a {
   color: var(--eb-muted);
+  text-decoration: none;
+}
+
+.kw-legal a:hover {
+  color: var(--eb-accent);
+  text-decoration: underline;
 }
 
 .kw-raw-text {
