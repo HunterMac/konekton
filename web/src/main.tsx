@@ -47,7 +47,7 @@ function render(el: HTMLElement, node: ReactNode): void {
 
 function showStartPage(note?: string): void {
   document.body.classList.add('kw-scroll');
-  document.title = 'Konekton boards';
+  document.title = 'Files – Konekton';
   const signedOut = drive?.auth.state().kind === 'signedOut';
   render(
     rootEl,
@@ -112,7 +112,7 @@ async function openBoard(name: string): Promise<void> {
     uiEl,
     <>
       <a className="kw-boards-link" href={homeHref()}>
-        Boards
+        Files
       </a>
       {badge()}
       <DialogHost dialogs={dialogs} />

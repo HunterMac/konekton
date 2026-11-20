@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Panel } from '@xyflow/react';
 import { useBoard, useBoardStore } from '../useBoard';
 import type { Mode } from '../plans';
@@ -8,23 +9,24 @@ const VIEWS: { mode: Mode; label: string; title: string }[] = [
   { mode: 'timeline', label: 'Timeline', title: 'Do: items on a date arrow' },
 ];
 
-/** Top center: switch between Chaos, Board and Timeline. */
-export function ViewSwitcher() {
+/** Top center: switch between Chaos, Board and Timeline. `children` sit to its right without moving it off center. */
+export function ViewSwitcher({ children }: { children?: ReactNode }) {
   const store = useBoardStore();
   const mode = useBoard((s) => s.mode);
   return (
-    <Panel position="top-center" className="eb-ui eb-switcher">
+    <Panel position="top-center" className="eb-chip-bar eb-switcher">
       {VIEWS.map((v) => (
         <button
           key={v.mode}
           type="button"
-          className={`eb-btn eb-switch${mode === v.mode ? ' active' : ''}`}
+          className={`eb-chip${mode === v.mode ? ' active' : ''}`}
           title={v.title}
           onClick={() => store.getState().setMode(v.mode)}
         >
           {v.label}
         </button>
       ))}
+      {children}
     </Panel>
   );
 }

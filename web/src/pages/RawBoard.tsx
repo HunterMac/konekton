@@ -38,7 +38,7 @@ export function RawBoard({ storage, name }: { storage: BoardStorage; name: strin
     <main className="kw-page kw-raw">
       <h1>{name}</h1>
       <p>
-        <a href={homeHref()}>Boards</a>
+        <a href={homeHref()}>Files</a>
       </p>
       {state.kind === 'loading' && <p>Loading…</p>}
       {state.kind === 'missing' && <p className="kw-note">Board not found: {name}</p>}

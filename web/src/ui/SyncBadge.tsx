@@ -22,11 +22,13 @@ function viewOf(status: SyncStatus, props: Props): View {
   if (status.kind === 'synced') return { text: 'Synced' };
   switch (status.detail) {
     case 'signedOut':
-      return { text: 'Not synced · Signed out', action: { label: 'Sign in with Google', run: props.onSignIn } };
+      return { text: 'Signed out', action: { label: 'Sign in with Google', run: props.onSignIn } };
     case 'waiting':
       return { text: 'Not synced', action: { label: 'Sync now', run: () => props.sync.syncNow() } };
     case 'syncing':
       return { text: 'Not synced · Syncing…' };
+    case 'checking':
+      return { text: 'Checking Drive…' };
     case 'needsGesture':
       return { text: 'Not synced · Click or type to reconnect' };
     case 'needsReconnect':
@@ -58,23 +60,25 @@ export function SyncBadge(props: Props) {
 
   const view = viewOf(status, props);
   const synced = status.kind === 'synced';
+  // Nothing local to send while Drive is read: no warning colour.
+  const calm = synced || (status.kind === 'notSynced' && status.detail === 'checking');
   const email = (() => {
     const s = props.auth.state();
     return s.kind === 'signedIn' ? s.email : undefined;
   })();
 
   return (
-    <div className={`kw-sync ${synced ? 'kw-sync-ok' : 'kw-sync-pending'}`}>
+    <div className={`eb-chip-bar kw-sync ${calm ? 'kw-sync-ok' : 'kw-sync-pending'}`}>
       <span role="status" className="kw-sync-text">
         {view.text}
       </span>
       {view.action && (
-        <button type="button" onClick={view.action.run}>
+        <button type="button" className="eb-chip" onClick={view.action.run}>
           {view.action.label}
         </button>
       )}
       {synced && (
-        <button type="button" aria-expanded={menu} onClick={() => setMenu(!menu)}>
+        <button type="button" className="eb-chip" aria-expanded={menu} onClick={() => setMenu(!menu)}>
           Account
         </button>
       )}
@@ -83,6 +87,7 @@ export function SyncBadge(props: Props) {
           {email && <div>{email}</div>}
           <button
             type="button"
+            className="eb-chip"
             onClick={() => {
               setMenu(false);
               props.onSignOut();

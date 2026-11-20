@@ -23,7 +23,7 @@ interface LockManagerLike {
  */
 export class SyncCoordinator implements SyncControl {
   private leader = false;
-  private mirrored: SyncStatus = { kind: 'notSynced', detail: 'waiting' };
+  private mirrored: SyncStatus = { kind: 'notSynced', detail: 'checking' };
   private readonly listeners = new Set<(s: SyncStatus) => void>();
   private lastToken: string | undefined;
 

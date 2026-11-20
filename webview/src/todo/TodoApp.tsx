@@ -14,6 +14,12 @@ const OWNER = 'standalone';
 
 type View = 'todo' | 'board' | 'timeline';
 
+const VIEWS: { view: View; label: string; title: string }[] = [
+  { view: 'todo', label: 'Todo', title: 'Show as todo list' },
+  { view: 'board', label: 'Board', title: 'Show this list as Todo / In progress / Done lanes' },
+  { view: 'timeline', label: 'Timeline', title: 'Show this list on a date arrow by due date' },
+];
+
 /**
  * The full todo editor: one `*.todo.md` file as a whole editor tab (TODO-STANDALONE.md). The same list and lanes as
  * on the board, with a fixed text size that follows the width of the editor, and the page scrolls.
@@ -73,19 +79,16 @@ export function TodoApp() {
           <span className="eb-todo-page-name" title={path}>
             {path}
           </span>
-          <span className="eb-view-switch" role="group" aria-label="View">
-            <button type="button" className={view === 'todo' ? 'active' : ''} title="Show as todo list" onClick={() => setView('todo')}>
-              Todo
-            </button>
-            <button type="button" className={view === 'board' ? 'active' : ''} title="Show this list as Todo / In progress / Done lanes" onClick={() => setView('board')}>
-              Board
-            </button>
-            <button type="button" className={view === 'timeline' ? 'active' : ''} title="Show this list on a date arrow by due date" onClick={() => setView('timeline')}>
-              Timeline
-            </button>
-            <button type="button" title="Show the Markdown text" onClick={() => store.getState().reopenAsText()}>
-              Text
-            </button>
+          <button type="button" className="eb-todo-back" title="Show the Markdown text" onClick={() => store.getState().reopenAsText()}>
+            Text
+          </button>
+          {/* Top center, like the Chaos / Board / Timeline switcher of a canvas. */}
+          <span className="eb-chip-bar eb-todo-page-switcher" role="group" aria-label="View">
+            {VIEWS.map((v) => (
+              <button key={v.view} type="button" className={`eb-chip${view === v.view ? ' active' : ''}`} title={v.title} onClick={() => setView(v.view)}>
+                {v.label}
+              </button>
+            ))}
           </span>
         </header>
         <main className="eb-todo-page-body">{body}</main>

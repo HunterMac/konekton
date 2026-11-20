@@ -117,7 +117,7 @@ export async function startDriveMode(dialogs: BrowserDialogs, hooks: { savedAsCo
     auth,
     signIn() {
       if (!import.meta.env.VITE_GOOGLE_CLIENT_ID) {
-        dialogs.alert('Google sign-in is not set up: VITE_GOOGLE_CLIENT_ID is missing in this build.');
+        void dialogs.alert('Google sign-in is not set up: VITE_GOOGLE_CLIENT_ID is missing in this build.');
         return;
       }
       auth.signIn();

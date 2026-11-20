@@ -88,7 +88,7 @@ export class WebTodoHost implements Host {
   private async backToCanvas(): Promise<void> {
     const boards = await this.boards();
     if (boards.length === 0) {
-      this.ports.dialogs.alert(`No board shows ${this.path}.`);
+      await this.ports.dialogs.alert(`No board shows ${this.path}.`);
       return;
     }
     const target = boards[0];

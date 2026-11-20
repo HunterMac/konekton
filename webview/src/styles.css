@@ -689,21 +689,52 @@ textarea.eb-file-text {
 
 /* ---- Views: switcher, plan cards, lanes and the timeline arrow --------------------------- */
 
-.eb-switcher,
-.eb-scale {
+/* Small white bar of bordered buttons: view switcher, timeline scale, and the web app's sync badge. */
+.eb-chip-bar {
   display: flex;
-  gap: 2px;
-  padding: 3px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: var(--eb-panel-shadow);
+  color: var(--eb-muted);
+  font-family: var(--eb-font);
+  font-size: 12px;
+  user-select: none;
+}
+
+.eb-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--eb-line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--eb-ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.eb-chip:hover {
+  border-color: var(--eb-accent);
+  color: var(--eb-accent);
+}
+
+.eb-chip.active {
+  border-color: var(--eb-accent);
+  background: #eef1ff;
+  color: var(--eb-accent);
+}
+
+.eb-switcher {
   margin-top: 12px !important;
 }
 
+/* Inside the switcher panel, just right of it: the switcher stays in the center. */
 .eb-scale {
-  margin-right: 12px !important;
-}
-
-.eb-switch {
-  padding: 0 14px;
-  font-size: 13px;
+  position: absolute;
+  top: 0;
+  left: calc(100% + 8px);
+  white-space: nowrap;
 }
 
 .eb-menu-item.nested {
@@ -2000,6 +2031,24 @@ textarea.eb-file-text {
 .eb-todo-page .eb-view-switch button {
   font-size: 0.9em;
   padding: 0.15em 0.8em;
+}
+
+/* The view switcher sits in the middle of the head, like the switcher of a canvas; the left part must not run under it. */
+.eb-todo-page-head {
+  position: relative;
+  min-height: 2.6em;
+}
+
+.eb-todo-page-head .eb-todo-page-name {
+  flex: 0 1 auto;
+  max-width: calc(50% - 15em);
+}
+
+.eb-todo-page-switcher {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .eb-todo-back {

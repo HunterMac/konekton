@@ -90,7 +90,7 @@ describe('WebHost', () => {
       { type: 'promptUrlResult', requestId: 1, url: undefined },
       { type: 'promptUrlResult', requestId: 2, url: 'https://a.b' },
     ]);
-    expect(dialogs.alerts).toEqual(['Only http: and https: URLs are supported.']);
+    expect(dialogs.prompts.map((p) => p.options?.error)).toEqual([undefined, undefined, 'Only http: and https: URLs are supported.']);
     expect(dialogs.prompts.map((p) => p.initial)).toEqual([undefined, 'https://old', 'ftp://x']);
   });
 
@@ -153,8 +153,9 @@ describe('WebHost', () => {
       dialogs.promptAnswers = ['nope.md', ' notes/a.md '];
       host.post({ type: 'pickFile', requestId: 1 });
       await tick();
-      expect(dialogs.prompts[0].message).toContain('b.todo.md\nnotes/a.md');
-      expect(dialogs.alerts).toEqual(['No such file in the boards folder: nope.md']);
+      expect(dialogs.prompts[0].options?.suggestions).toEqual(['b.todo.md', 'notes/a.md']);
+      expect(dialogs.prompts[1].options?.error).toBe('No such file in the boards folder: nope.md');
+      expect(dialogs.prompts[1].initial).toBe('nope.md');
       expect(received).toEqual([{ type: 'pickFileResult', requestId: 1, path: 'notes/a.md' }]);
     });
 
@@ -164,7 +165,7 @@ describe('WebHost', () => {
       dialogs.promptAnswers = ['home', 'work.todo.md'];
       host.post({ type: 'createTodoFile', requestId: 3 });
       await tick();
-      expect(dialogs.alerts).toEqual(['home.todo.md already exists.']);
+      expect(dialogs.prompts[1].options?.error).toBe('home.todo.md already exists.');
       expect(received).toEqual([{ type: 'createTodoFileResult', requestId: 3, path: 'work.todo.md' }]);
       expect(files.disk.get('work.todo.md')).toBe('- [ ] \n');
       dialogs.promptAnswers = [undefined];

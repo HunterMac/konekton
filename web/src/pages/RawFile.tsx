@@ -22,7 +22,7 @@ export function RawFile({ files, path }: { files: FileStore; path: string }) {
     <main className="kw-page kw-raw">
       <h1>{path}</h1>
       <p>
-        <a href={homeHref()}>Boards</a>
+        <a href={homeHref()}>Files</a>
       </p>
       {state.status === 'loading' && <p>Loading…</p>}
       {state.status === 'missing' && <p className="kw-note">File not found: {path}</p>}

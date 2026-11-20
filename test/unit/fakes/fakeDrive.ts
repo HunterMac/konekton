@@ -8,6 +8,9 @@ interface Item extends DriveFile {
   trashed?: boolean;
 }
 
+/** Like the real Drive: `parents` of a top-level item holds this id, never the alias `root`. */
+export const MY_DRIVE_ID = 'MYDRIVE';
+
 type Op = 'about' | 'listAll' | 'createFolder' | 'download' | 'create' | 'update';
 
 export class FakeDrive implements DriveApi {
@@ -49,7 +52,7 @@ export class FakeDrive implements DriveApi {
 
   /** The folder `konekton` in My Drive. */
   makeRoot(): string {
-    this.rootId = this.add('konekton', FOLDER_MIME, 'root').id;
+    this.rootId = this.add('konekton', FOLDER_MIME, MY_DRIVE_ID).id;
     return this.rootId;
   }
 
@@ -96,7 +99,7 @@ export class FakeDrive implements DriveApi {
   /** Moved out of `konekton` into My Drive. */
   moveOut(path: string): void {
     const item = this.find(path);
-    if (item) item.parents = ['root'];
+    if (item) item.parents = [MY_DRIVE_ID];
   }
 
   private nameOf(id: string): string {
@@ -120,8 +123,10 @@ export class FakeDrive implements DriveApi {
   async createFolder(name: string, parentId: string) {
     this.log.push(`createFolder ${name}`);
     this.maybeFail('createFolder');
-    const item = this.add(name, FOLDER_MIME, parentId);
-    if (name === 'konekton' && parentId === 'root') this.rootId = item.id;
+    this.needParent(parentId);
+    const parent = parentId === 'root' ? MY_DRIVE_ID : parentId; // the alias works in requests
+    const item = this.add(name, FOLDER_MIME, parent);
+    if (name === 'konekton' && parent === MY_DRIVE_ID) this.rootId = item.id;
     return { id: item.id };
   }
 
@@ -133,7 +138,20 @@ export class FakeDrive implements DriveApi {
     return item.text ?? '';
   }
 
+  /** The folder `konekton` and everything in it deleted for good (Drive answers 404 for it). */
+  destroyAll(): void {
+    this.items.clear();
+    this.rootId = undefined;
+  }
+
+  private needParent(parentId: string): void {
+    if (parentId === 'root' || parentId === MY_DRIVE_ID) return;
+    const parent = this.items.get(parentId);
+    if (!parent || parent.trashed) throw new GoneError();
+  }
+
   async create(name: string, parentId: string, text: string, _mime: string): Promise<WriteResult> {
+    this.needParent(parentId);
     const item = this.add(name, 'text/plain', parentId, text);
     this.log.push(`create ${this.nameOf(item.id)}`);
     this.maybeFail('create');

@@ -256,12 +256,12 @@ Run with `npm run dev` in Chrome and Firefox.
 - [ ] `npm run dev` prints the address and the boards folder and does not open a browser. First start fills `boards/`; `git status` does not show `boards/`.
 - [ ] Start page lists the boards. "New board" with name `plan` creates `plan.canvas` and opens it. Same name again: message, no overwrite. Name `../x`: message.
 - [ ] Open `sample.canvas`. Create, move, connect, style objects. The file on disk updates about 300 ms after the last change. Ctrl/Cmd+S saves at once and shows no "Save page" box.
-- [ ] File tool: the prompt lists the `.md`/`.txt`/`.json` files of the boards folder; an unknown path is refused. The object shows the file; edit it on the board and the file on disk changes. Change the file in VS Code: the board follows. **Open in editor** opens a tab with the text.
+- [ ] File tool: a dialog lists the `.md`/`.txt`/`.json` files of the boards folder (click one, or type to narrow the list); an unknown path shows an error in the dialog. The object shows the file; edit it on the board and the file on disk changes. Change the file in VS Code: the board follows. **Open in editor** opens a tab with the text.
 - [ ] Todo lists: the checklist tool asks for a name and creates `<name>.todo.md` (a taken name: message, asks again). Add, nest, mark done and edit tasks; the file on disk changes. Change it in VS Code: the list follows.
 - [ ] Undo/redo: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl+Y. Each board action is one step. In a sticky's text, Ctrl+Z undoes the text only. Switching views or the timeline scale adds no step.
 - [ ] Reload the page: the view, the cameras and the timeline scale are kept for this tab. Grid on/off is kept for all boards and follows in a second tab.
 - [ ] Right-click Copy, then right-click Paste. Chrome asks once; Firefox shows a "Paste" button. Refused: nothing is pasted. Ctrl/Cmd+C/V need no permission.
-- [ ] New link and Edit URL use the browser prompt; `ftp://x` is refused with a message. Double-click opens a new tab.
+- [ ] New link and Edit URL open a dialog; `ftp://x` shows an error in it. Enter confirms, Esc cancels. Double-click opens a new tab.
 - [ ] Open the same board in VS Code. Change it there and save, with nothing unsaved in the browser: the browser board updates and shows "Reloaded: the file changed on server". Ctrl+Z does nothing then.
 - [ ] Start typing in a sticky in the browser and keep the text field open. Change and save the same file in VS Code: the question appears (the typed text counts as unsaved). The board cannot be changed with mouse or keys while it is shown; Esc does not close it. "Reload" shows the VS Code version. "Save my version" opens `sample_web.canvas` (address changes); doing it again gives `sample_web-2.canvas`.
 - [ ] Your own saves never show "Reloaded" or the question.
@@ -275,7 +275,7 @@ Run with `npm run dev` in Chrome and Firefox.
 
 Run on `VITE_KONEKTON_STORAGE=drive npm run dev` with two browser profiles A and B signed in to the same Google account, and once on the deployed site, in Chrome and Firefox.
 
-- [ ] Signed out: create a board and a todo file; reload; both are there; badge "Not synced · Signed out".
+- [ ] Signed out: create a board and a todo file; reload; both are there; badge "Signed out".
 - [ ] Sign in: Google's window once; the signed-out board uploads; Drive shows `konekton/<board>.canvas`; badge "Synced".
 - [ ] Edit a board: the badge shows "Not synced" and turns "Synced" within about 15 s; several edits within 15 s give at most one upload at once and one 15 s later (network panel).
 - [ ] Ctrl/Cmd+S uploads at once.

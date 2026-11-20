@@ -40,22 +40,26 @@ export function kindOfPath(path: string): 'board' | 'file' | undefined {
 const byCreated = (a: DriveFile, b: DriveFile): number => (a.createdTime < b.createdTime ? -1 : a.createdTime > b.createdTime ? 1 : 0);
 
 /**
- * The folder `konekton` in My Drive: the oldest one. `extra` is true when there is more than one.
- * `undefined` when there is none.
+ * The folder `konekton` in My Drive: the oldest one (new items go there). `all` lists every top-level `konekton`,
+ * oldest first; `extra` is true when there is more than one. `undefined` when there is none.
  */
-export function pickRoot(files: DriveFile[]): { id: string; extra: boolean } | undefined {
-  const roots = files.filter((f) => f.mimeType === FOLDER_MIME && f.name === ROOT_NAME && (f.parents ?? []).includes('root')).sort(byCreated);
-  return roots.length === 0 ? undefined : { id: roots[0].id, extra: roots.length > 1 };
+export function pickRoot(files: DriveFile[]): { id: string; all: string[]; extra: boolean } | undefined {
+  // With `drive.file` the app cannot read My Drive itself (`files/root` is a 404), and `parents` holds My Drive's real id,
+  // not the alias `root`. So the top folder is the one whose parent is not an item the app can see.
+  const visible = new Set(files.map((f) => f.id));
+  const roots = files.filter((f) => f.mimeType === FOLDER_MIME && f.name === ROOT_NAME && !(f.parents ?? []).some((p) => visible.has(p))).sort(byCreated);
+  return roots.length === 0 ? undefined : { id: roots[0].id, all: roots.map((r) => r.id), extra: roots.length > 1 };
 }
 
 /**
- * Paths of the items below the folder `rootId`. An item whose parent chain does not reach the root is left out
- * (moved out of the folder counts as removed).
+ * Paths of the items below the root folders (several `konekton` folders read as one; the newest file of a path wins).
+ * An item whose parent chain does not reach a root is left out (moved out of the folder counts as removed).
  */
-export function buildTree(files: DriveFile[], rootId: string): DriveTree {
+export function buildTree(files: DriveFile[], rootIds: string[]): DriveTree {
   const byId = new Map(files.map((f) => [f.id, f]));
+  const roots = new Set(rootIds);
   const folderPaths = new Map<string, string>(); // folder id → path
-  folderPaths.set(rootId, '');
+  for (const id of rootIds) folderPaths.set(id, '');
 
   const pathOfFolder = (id: string, seen: Set<string>): string | undefined => {
     const known = folderPaths.get(id);
@@ -76,7 +80,7 @@ export function buildTree(files: DriveFile[], rootId: string): DriveTree {
   const folders = new Map<string, string>();
   const fileItems = new Map<string, DriveFile[]>();
   for (const f of [...files].sort(byCreated)) {
-    if (f.id === rootId) continue;
+    if (roots.has(f.id)) continue;
     if (f.mimeType === FOLDER_MIME) {
       const path = pathOfFolder(f.id, new Set());
       // The oldest folder of a path wins.

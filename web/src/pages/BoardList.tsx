@@ -4,7 +4,7 @@ import { isTodoPath } from '../../../src/shared/todoFormat';
 import type { BoardInfo } from '../../shared/api';
 import { toBoardName } from '../../shared/boardNames';
 import type { BoardStorage, Dialogs, FileStore } from '../ports/types';
-import { boardHref, todoHref } from '../routes';
+import { boardHref, homeHref, todoHref } from '../routes';
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -77,22 +77,29 @@ export function BoardList({ storage, files, dialogs, note, emptyHint }: { storag
   }, [files, refreshFiles]);
 
   const newBoard = async () => {
-    const input = dialogs.prompt('Board name');
-    if (input === undefined) return;
-    const name = toBoardName(input);
-    if (!name) {
-      dialogs.alert('Use a plain file name, for example "plan".');
-      return;
-    }
-    try {
-      const created = await storage.create(name, serialize(emptyDoc()));
-      if (created === 'exists') {
-        dialogs.alert(`A board named ${name} already exists.`);
+    let value: string | undefined;
+    let error: string | undefined;
+    for (;;) {
+      const input = await dialogs.prompt('Board name', value, { error, placeholder: 'e.g. plan', submitLabel: 'Create' });
+      if (input === undefined) return;
+      const name = toBoardName(input);
+      value = input;
+      if (!name) {
+        error = 'Use a plain file name, for example "plan".';
+        continue;
+      }
+      try {
+        const created = await storage.create(name, serialize(emptyDoc()));
+        if (created === 'exists') {
+          error = `A board named ${name} already exists.`;
+          continue;
+        }
+        window.location.assign(boardHref(created.name));
+        return;
+      } catch (err) {
+        await dialogs.alert(`The board was not created: ${message(err)}`);
         return;
       }
-      window.location.assign(boardHref(created.name));
-    } catch (err) {
-      dialogs.alert(`The board was not created: ${message(err)}`);
     }
   };
 
@@ -101,7 +108,7 @@ export function BoardList({ storage, files, dialogs, note, emptyHint }: { storag
 
   return (
     <main className="kw-page">
-      <h1>Konekton boards</h1>
+      <h1>Files</h1>
       {note && <p className="kw-note">{note}</p>}
       {error && <p className="kw-note kw-error">Cannot list the boards: {error}</p>}
       {filesError && filter !== 'canvas' && <p className="kw-note kw-error">Cannot list the todo lists: {filesError}</p>}
@@ -135,6 +142,10 @@ export function BoardList({ storage, files, dialogs, note, emptyHint }: { storag
           )}
         </ul>
       )}
+      <footer className="kw-legal">
+        <a href={`${homeHref()}privacy.html`}>Privacy Policy</a>
+        <a href={`${homeHref()}terms.html`}>Terms of Service</a>
+      </footer>
     </main>
   );
 }

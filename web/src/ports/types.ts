@@ -53,10 +53,21 @@ export interface Env {
   openTodo(path: string, from: string): void;
 }
 
+export interface PromptOptions {
+  /** Shown in red under the field: why the last answer was refused. */
+  error?: string;
+  /** Known values the person can click to fill the field. */
+  suggestions?: string[];
+  placeholder?: string;
+  /** Text of the OK button. */
+  submitLabel?: string;
+}
+
 export interface Dialogs {
-  /** undefined = cancelled. */
-  prompt(message: string, initial?: string): string | undefined;
-  alert(message: string): void;
+  /** A dialog with one text field. undefined = cancelled. */
+  prompt(message: string, initial?: string, options?: PromptOptions): Promise<string | undefined>;
+  /** A dialog with an OK button; resolves when it is closed. */
+  alert(message: string): Promise<void>;
   /** Short note that hides by itself. */
   notify(message: string): void;
   /** Required choice after an outside change while there are unsaved changes. */

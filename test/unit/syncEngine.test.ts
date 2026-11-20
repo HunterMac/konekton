@@ -82,6 +82,51 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('a new page load (switching views)', () => {
+  const restart = (t: Awaited<ReturnType<typeof setup>>) =>
+    new SyncEngine({
+      store: t.store,
+      drive: t.drive,
+      auth: t.auth,
+      dialogs: t.dialogs,
+      now: () => Date.now(),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    });
+
+  it('right after a refresh: no Drive read, the badge says Synced at once', async () => {
+    const t = await setup();
+    t.engine.stop();
+    await advance(10_000);
+    const lists = t.drive.count('listAll');
+    const next = restart(t);
+    const seen: string[] = [];
+    next.onStatus((s) => seen.push(s.kind === 'synced' ? 'synced' : s.detail));
+    await next.start();
+    await settle();
+    expect(t.drive.count('listAll')).toBe(lists);
+    expect(next.status()).toEqual({ kind: 'synced' });
+    expect(seen).not.toContain('syncing');
+    expect(seen).not.toContain('waiting');
+  });
+
+  it('after 5 min it reads Drive again, shown as checking, not as unsynced', async () => {
+    const t = await setup();
+    t.engine.stop();
+    await advance(5 * 60_000 + 1000);
+    const lists = t.drive.count('listAll');
+    const next = restart(t);
+    const seen: string[] = [];
+    next.onStatus((s) => seen.push(s.kind === 'synced' ? 'synced' : s.detail));
+    await next.start();
+    await settle();
+    expect(t.drive.count('listAll')).toBe(lists + 1);
+    expect(seen.at(-1)).toBe('synced');
+    expect(seen).not.toContain('syncing');
+    expect(seen).not.toContain('waiting');
+  });
+});
+
 describe('the 15 s rule', () => {
   it('pushes at once when nothing was synced for 15 s, then once 15 s after the last sync', async () => {
     const { store, drive } = await setup();
@@ -323,6 +368,39 @@ describe('refresh', () => {
     await settle();
     expect(await two.store.get('x.canvas')).toMatchObject({ text: 'in first' });
     expect(two.dialogs.notices.some((n) => n.includes('konekton'))).toBe(true);
+  });
+
+  it('files spread over several konekton folders: all are read, no removal questions, no new folder', async () => {
+    const t = await setup();
+    await edit(t.store, 'a.canvas', 'one');
+    await settle();
+    // A second top-level konekton with another synced file in it (what the old bug left behind).
+    const first = t.drive.rootId as string;
+    const second = t.drive.makeRoot();
+    t.drive.putFile('b.canvas', 'in second');
+    t.drive.rootId = first;
+    await advance(5 * 60_000 + 1000);
+    t.engine.onFocus();
+    await settle();
+    await settle();
+    expect(await t.store.get('a.canvas')).toMatchObject({ text: 'one', synced: true });
+    expect(await t.store.get('b.canvas')).toMatchObject({ text: 'in second', synced: true });
+    expect(t.dialogs.removals).toEqual([]);
+    expect(t.drive.count('createFolder konekton')).toBe(1);
+    expect(second).not.toBe(first);
+  });
+
+  it('a remembered folder deleted in Drive: the next file makes konekton again, no error', async () => {
+    const t = await setup();
+    await edit(t.store, 'a.canvas', 'one');
+    await settle();
+    expect(t.drive.textOf('a.canvas')).toBe('one');
+    t.drive.destroyAll();
+    await advance(15_100);
+    await edit(t.store, 'b.canvas', 'two');
+    await settle();
+    expect(t.drive.textOf('b.canvas')).toBe('two');
+    expect(t.engine.status()).not.toMatchObject({ kind: 'error' });
   });
 
   it('two files with the same path: the newest is used, with a warning', async () => {

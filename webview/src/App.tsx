@@ -874,8 +874,7 @@ function Board() {
       >
         {gridEnabled && <Background variant={BackgroundVariant.Lines} gap={GRID_STEP} color="#EDEDED" lineWidth={1} />}
         {layout && <PlanBackground mode={mode} layout={layout} activeKey={activeKey} />}
-        <ViewSwitcher />
-        {mode === 'timeline' && <TimelineScale scale={scale} onChange={onScale} />}
+        <ViewSwitcher>{mode === 'timeline' && <TimelineScale scale={scale} onChange={onScale} />}</ViewSwitcher>
         {mode === 'chaos' && <LeftToolbar />}
         <SnapGuides />
         <ZoomControls />

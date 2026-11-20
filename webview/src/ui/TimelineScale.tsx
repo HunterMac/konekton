@@ -1,17 +1,16 @@
-import { Panel } from '@xyflow/react';
 import { SCALES, type Scale } from '../layout/dates';
 
 const LABELS: Record<Scale, string> = { days: 'Days', weeks: 'Weeks', months: 'Months' };
 
-/** Top right of the Timeline: the size of one segment of the arrow. */
+/** Right of the view switcher in the Timeline: the size of one segment of the arrow. Goes inside `ViewSwitcher`. */
 export function TimelineScale({ scale, onChange }: { scale: Scale; onChange(scale: Scale): void }) {
   return (
-    <Panel position="top-right" className="eb-ui eb-scale">
+    <div className="eb-chip-bar eb-scale">
       {SCALES.map((s) => (
-        <button key={s} type="button" className={`eb-btn eb-switch${scale === s ? ' active' : ''}`} onClick={() => onChange(s)}>
+        <button key={s} type="button" className={`eb-chip${scale === s ? ' active' : ''}`} onClick={() => onChange(s)}>
           {LABELS[s]}
         </button>
       ))}
-    </Panel>
+    </div>
   );
 }

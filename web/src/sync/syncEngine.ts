@@ -14,7 +14,7 @@ const META_LAST_REFRESH = 'lastRefreshAt';
 
 export type SyncStatus =
   | { kind: 'synced' }
-  | { kind: 'notSynced'; detail: 'signedOut' | 'waiting' | 'syncing' | 'needsGesture' | 'needsReconnect' | 'asking' | 'error'; message?: string };
+  | { kind: 'notSynced'; detail: 'signedOut' | 'waiting' | 'syncing' | 'checking' | 'needsGesture' | 'needsReconnect' | 'asking' | 'error'; message?: string };
 
 export const statusEquals = (a: SyncStatus, b: SyncStatus): boolean => JSON.stringify(a) === JSON.stringify(b);
 
@@ -61,13 +61,15 @@ export class SyncEngine implements SyncControl {
   private readonly open = new Set<string>();
   private readonly listeners = new Set<(s: SyncStatus) => void>();
   private readonly cleanups: (() => void)[] = [];
-  private lastStatus: SyncStatus = { kind: 'notSynced', detail: 'waiting' };
+  private lastStatus: SyncStatus = { kind: 'notSynced', detail: 'checking' };
 
   private started = false;
   private lastSyncAt = Number.NEGATIVE_INFINITY;
   private lastRefreshAt = Number.NEGATIVE_INFINITY;
   private needRefresh = true;
   private syncing = false;
+  /** Reading Drive for outside changes; the local copy itself has nothing to send. */
+  private refreshing = false;
   private error: string | undefined;
   private attempt = 0;
   private pushTimer: unknown;
@@ -98,7 +100,8 @@ export class SyncEngine implements SyncControl {
     if (this.error !== undefined) return { kind: 'notSynced', detail: 'error', message: this.error };
     if (this.open.size > 0) return { kind: 'notSynced', detail: 'asking' };
     if (this.syncing) return { kind: 'notSynced', detail: 'syncing' };
-    if (this.dirty.size > 0 || this.needRefresh) return { kind: 'notSynced', detail: 'waiting' };
+    if (this.dirty.size > 0) return { kind: 'notSynced', detail: 'waiting' };
+    if (this.refreshing || this.needRefresh) return { kind: 'notSynced', detail: 'checking' };
     return { kind: 'synced' };
   }
 
@@ -123,12 +126,19 @@ export class SyncEngine implements SyncControl {
     if (this.started) return;
     this.started = true;
     // A question that was open when the page closed is asked again by the refresh.
+    let hadQuestion = false;
     for (const e of await this.store.list()) {
-      if (e.asking) await this.store.update(e.path, { asking: undefined });
+      if (e.asking) {
+        hadQuestion = true;
+        await this.store.update(e.path, { asking: undefined });
+      }
       if (!e.synced) this.dirty.add(e.path);
     }
     const lastRefresh = await this.store.getMeta<number>(META_LAST_REFRESH);
     if (typeof lastRefresh === 'number') this.lastRefreshAt = lastRefresh;
+    // Every page of the app is its own load: a refresh from a moment ago (the previous page) is fresh enough,
+    // unless a question was open then (only a refresh asks it again).
+    if (this.deps.now() - this.lastRefreshAt < this.refreshMs && !hadQuestion) this.needRefresh = false;
     this.cleanups.push(
       this.store.onEvent((event) => {
         if (event.kind === 'removed') this.dirty.delete(event.path);
@@ -149,7 +159,10 @@ export class SyncEngine implements SyncControl {
         this.emitStatus();
       }),
     );
-    if (this.signedIn()) this.enqueue('refresh');
+    if (this.signedIn()) {
+      if (this.needRefresh) this.enqueue('refresh');
+      else this.schedulePush();
+    }
     this.emitStatus();
   }
 
@@ -240,6 +253,7 @@ export class SyncEngine implements SyncControl {
           this.fail(err, op);
         }
         this.syncing = false;
+        this.refreshing = false;
         this.emitStatus();
       }
     } finally {
@@ -251,6 +265,11 @@ export class SyncEngine implements SyncControl {
   private fail(err: unknown, op: Op): void {
     if (op === 'refresh') this.needRefresh = true;
     if (err instanceof AuthError) return; // `GoogleAuth` asks the person; the token coming back starts the work again.
+    if (err instanceof GoneError) {
+      // Remembered folders may be stale: the next try (Retry) reads the tree first.
+      this.forgetFolders();
+      this.needRefresh = true;
+    }
     const retry = err instanceof TypeError || (err instanceof Error && err.name === 'RetryError');
     this.error = err instanceof TypeError ? 'Offline' : err instanceof Error ? err.message : String(err);
     if (!retry) return;
@@ -278,11 +297,16 @@ export class SyncEngine implements SyncControl {
     this.rootId = root.id;
     if (root.extra && !this.warnedRoots) {
       this.warnedRoots = true;
-      this.deps.dialogs.notify('Two folders named konekton in Drive; using the oldest.');
+      this.deps.dialogs.notify(`${root.all.length} folders named konekton in Drive; reading all of them, new files go to the oldest.`);
     }
-    const tree = buildTree(all, root.id);
+    const tree = buildTree(all, root.all);
     this.folders = new Map(tree.folders);
     return tree;
+  }
+
+  private forgetFolders(): void {
+    this.rootId = undefined;
+    this.folders = new Map();
   }
 
   private async folderFor(dir: string): Promise<string> {
@@ -335,8 +359,16 @@ export class SyncEngine implements SyncControl {
       }
     } else {
       const slash = entry.path.lastIndexOf('/');
-      const parent = await this.folderFor(slash < 0 ? '' : entry.path.slice(0, slash));
-      written = await this.drive.create(entry.path.slice(slash + 1), parent, entry.text, mime);
+      const dir = slash < 0 ? '' : entry.path.slice(0, slash);
+      const name = entry.path.slice(slash + 1);
+      try {
+        written = await this.drive.create(name, await this.folderFor(dir), entry.text, mime);
+      } catch (err) {
+        if (!(err instanceof GoneError)) throw err;
+        // A remembered folder is gone (deleted in Drive meanwhile): read the tree again, once.
+        this.forgetFolders();
+        written = await this.drive.create(name, await this.folderFor(dir), entry.text, mime);
+      }
     }
     const done = await this.store.put(entry.path, entry.kind, entry.text, {
       synced: true,
@@ -353,17 +385,14 @@ export class SyncEngine implements SyncControl {
   // --- Refresh ---------------------------------------------------------------------------------
 
   private async doRefresh(): Promise<void> {
-    const first = this.lastRefreshAt === Number.NEGATIVE_INFINITY || this.needRefresh;
-    if (first) {
-      this.syncing = true;
-      this.emitStatus();
-    }
+    this.refreshing = true;
+    this.emitStatus();
     const tree = await this.loadTree();
-    for (const path of tree.duplicates) {
-      if (this.warnedPaths.has(path)) continue;
-      this.warnedPaths.add(path);
-      this.deps.dialogs.notify(`Two files named ${path} in Drive; using the newest.`);
-    }
+    const fresh = tree.duplicates.filter((p) => !this.warnedPaths.has(p));
+    for (const path of fresh) this.warnedPaths.add(path);
+    // One note, not one per path: a Drive with many copies would bury the page in notes.
+    if (fresh.length === 1) this.deps.dialogs.notify(`Two files named ${fresh[0]} in Drive; using the newest.`);
+    else if (fresh.length > 1) this.deps.dialogs.notify(`${fresh.length} files exist twice in Drive (${fresh.slice(0, 3).join(', ')}${fresh.length > 3 ? ', …' : ''}); using the newest of each.`);
 
     const locals = new Map((await this.store.list()).map((e) => [e.path, e]));
     for (const [path, remote] of [...tree.files].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
@@ -379,7 +408,7 @@ export class SyncEngine implements SyncControl {
     this.lastRefreshAt = this.deps.now();
     this.needRefresh = false;
     await this.store.setMeta(META_LAST_REFRESH, this.lastRefreshAt);
-    this.syncing = false;
+    this.refreshing = false;
     this.schedulePush();
   }
 

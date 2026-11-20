@@ -1,4 +1,4 @@
-/* Web app only: start page, "Open as text" page, the "Boards" link, notice and conflict dialog. */
+/* Web app only: start page, "Open as text" page, the "Files" link, notice and conflict dialog. */
 :root {
   --eb-accent: #4262ff;
   --eb-ink: #1a1a1a;
@@ -126,6 +126,19 @@ body.kw-scroll #root {
   font-size: 12px;
 }
 
+.kw-legal {
+  display: flex;
+  gap: 16px;
+  margin-top: 40px;
+  padding-top: 12px;
+  border-top: 1px solid var(--eb-line);
+  font-size: 12px;
+}
+
+.kw-legal a {
+  color: var(--eb-muted);
+}
+
 .kw-raw-text {
   margin: 16px 0 0;
   padding: 12px;
@@ -188,7 +201,6 @@ body.kw-scroll #root {
 .kw-boards-link:hover {
   color: var(--eb-accent);
 }
-
 .kw-notice-area {
   position: fixed;
   bottom: 24px;
@@ -236,23 +248,15 @@ body.kw-scroll #root {
   gap: 8px;
 }
 
-/* --- Sync badge (Drive mode): top right, same look as the "Boards" link -------------------------- */
+/* --- Sync badge (Drive mode): top right; the look is `eb-chip-bar` / `eb-chip` of the board styles ---- */
 
 .kw-sync {
   position: fixed;
   top: 12px;
   right: 12px;
   z-index: 50;
-  display: flex;
-  align-items: center;
   gap: 8px;
-  padding: 4px 6px 4px 10px;
-  border-radius: 6px;
-  background: #fff;
-  box-shadow: var(--eb-panel-shadow);
-  color: var(--eb-muted);
-  font-family: var(--eb-font);
-  font-size: 12px;
+  padding-left: 10px;
 }
 
 .kw-sync-ok .kw-sync-text {
@@ -261,21 +265,6 @@ body.kw-scroll #root {
 
 .kw-sync-pending .kw-sync-text {
   color: #8a5a00;
-}
-
-.kw-sync button {
-  padding: 2px 8px;
-  border: 1px solid var(--eb-line);
-  border-radius: 4px;
-  background: #fff;
-  color: var(--eb-ink);
-  font: inherit;
-  cursor: pointer;
-}
-
-.kw-sync button:hover {
-  border-color: var(--eb-accent);
-  color: var(--eb-accent);
 }
 
 .kw-sync-menu {
@@ -291,4 +280,83 @@ body.kw-scroll #root {
   background: #fff;
   box-shadow: var(--eb-panel-shadow);
   color: var(--eb-ink);
+}
+
+/* --- Prompt and alert dialogs ------------------------------------------------------------------ */
+
+.kw-dialog form {
+  margin: 0;
+}
+
+.kw-dialog-prompt {
+  width: min(440px, calc(100vw - 48px));
+}
+
+.kw-dialog-prompt > form > p:first-child {
+  font-weight: 600;
+}
+
+.kw-dialog-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #c4c4c4;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--eb-ink);
+  font: inherit;
+}
+
+.kw-dialog-input:focus {
+  outline: 2px solid var(--eb-accent);
+  outline-offset: -1px;
+  border-color: var(--eb-accent);
+}
+
+.kw-dialog-input[aria-invalid='true'] {
+  border-color: #c53030;
+}
+
+.kw-dialog p.kw-dialog-error {
+  margin: -4px 0 12px;
+  color: #a12626;
+  font-size: 13px;
+}
+
+.kw-dialog-suggestions {
+  max-height: 180px;
+  margin: 0 0 16px;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--eb-line);
+  border-radius: 6px;
+  list-style: none;
+}
+
+.kw-dialog .kw-dialog-suggestions button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.kw-dialog .kw-dialog-suggestions button:hover {
+  background: #f5f5f5;
+}
+
+.kw-dialog .kw-dialog-suggestions button.active {
+  background: #eef1ff;
+  color: var(--eb-accent);
+}
+
+.kw-dialog-none {
+  padding: 6px 10px;
+  color: var(--eb-muted);
+  font-size: 13px;
 }

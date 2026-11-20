@@ -3,7 +3,7 @@
 import type { BoardInfo, FileResponse } from '../../../web/shared/api';
 import { todoFileName } from '../../../src/shared/todoFormat';
 import { webCopyName } from '../../../web/shared/boardNames';
-import type { BoardStorage, Dialogs, Env, FileSaveResult, FileStore, LoadedBoard, SaveResult, Settings, StorageEvent, ViewStateStore } from '../../../web/src/ports/types';
+import type { BoardStorage, Dialogs, Env, PromptOptions, FileSaveResult, FileStore, LoadedBoard, SaveResult, Settings, StorageEvent, ViewStateStore } from '../../../web/src/ports/types';
 
 /** In-memory referenced files. `change` is an outside edit that the watchers see. */
 export class FakeFiles implements FileStore {
@@ -114,18 +114,18 @@ export class FakeStorage implements BoardStorage {
 export class FakeDialogs implements Dialogs {
   readonly notices: string[] = [];
   readonly alerts: string[] = [];
-  readonly prompts: { message: string; initial?: string }[] = [];
+  readonly prompts: { message: string; initial?: string; options?: PromptOptions }[] = [];
   readonly conflicts: { name: string; copyName: string }[] = [];
   /** Answers for `prompt`, in order. `undefined` = cancel. */
   promptAnswers: (string | undefined)[] = [];
   private pending: ((answer: 'reload' | 'saveAs') => void) | undefined;
 
-  prompt(message: string, initial?: string): string | undefined {
-    this.prompts.push({ message, initial });
+  async prompt(message: string, initial?: string, options?: PromptOptions): Promise<string | undefined> {
+    this.prompts.push({ message, initial, options });
     return this.promptAnswers.shift();
   }
 
-  alert(message: string): void {
+  async alert(message: string): Promise<void> {
     this.alerts.push(message);
   }
 
